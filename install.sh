@@ -11,7 +11,8 @@
 # Windows：请使用 win.bat
 #
 # 结构：本文件是入口，负责识别系统、共用函数与部署四个容器；
-#       准备 Docker 的逻辑按系统拆在 os/linux.sh、os/macos.sh，运行时 source 加载。
+#       准备 Docker 的逻辑按系统拆在 os/linux.sh、os/macos.sh，运行时 source 加载；
+#       本地 HTTPS 证书由 ssl.sh 生成（mkcert 优先、openssl 兜底），nginx 443 + 80→443。
 set -euo pipefail
 
 NET_NAME=xqkeji-net
@@ -148,6 +149,7 @@ run_containers() {
         -v "$BASE_DIR/log/nginx:/home/log" \
         -v "$BASE_DIR/etc/nginx/nginx.conf:/etc/nginx/nginx.conf" \
         -v "$BASE_DIR/etc/nginx/conf.d:/etc/nginx/conf.d" \
+        -v "$BASE_DIR/etc/nginx/ssl:/etc/nginx/ssl:ro" \
         nginx >/dev/null
 
     info "启动 mysql 容器"
@@ -186,13 +188,13 @@ verify_service() {
         return 0
     fi
     for ((i = 0; i < 30; i++)); do
-        if curl -fsS -o /dev/null --max-time 3 http://127.0.0.1/ 2>/dev/null; then
-            info "站点已可访问：http://127.0.0.1/"
+        if curl -fsSk -o /dev/null --max-time 3 https://127.0.0.1/ 2>/dev/null; then
+            info "站点已可访问：https://127.0.0.1/（80 自动跳转 443）"
             return 0
         fi
         sleep 1
     done
-    warn "30 秒内 http://127.0.0.1/ 未响应，请检查：docker ps 与 docker logs nginx"
+    warn "30 秒内 https://127.0.0.1/ 未响应，请检查：docker ps 与 docker logs nginx"
 }
 
 summary() {
@@ -200,7 +202,7 @@ summary() {
     cat <<EOF
 
 站点目录：$BASE_DIR/www/default
-访问地址：http://127.0.0.1/
+访问地址：https://127.0.0.1/（http://127.0.0.1/ 自动跳转 https）
 MySQL   ：127.0.0.1:3306   root / xqkeji.cn
 MongoDB ：127.0.0.1:27017  root / xqkeji.cn
 PHP-FPM ：127.0.0.1:9000   容器内 $IP_PHP:9000
@@ -227,6 +229,7 @@ main() {
     pull_images
     remove_old_containers
     ensure_network
+    bash "$BASE_DIR/ssl.sh"
     run_containers
     verify_service
     summary

@@ -15,7 +15,7 @@ docker + nginx + mysql + mongodb + php 集成开发环境。
 
 `install.sh` 会自己判断操作系统，不需要再按系统挑脚本。
 
-脚本按「入口 + 分系统」组织：`install.sh` 是入口，负责识别系统、共用函数和部署四个容器；准备 Docker 的逻辑拆在 `os/linux.sh`（自动安装引擎）与 `os/macos.sh`（只检查、不安装），运行时由入口 `source` 加载，不能单独执行。发行版分派集中在 `os/linux.sh`，以后新增发行版只改这一个文件。
+脚本按「入口 + 分系统」组织：`install.sh` 是入口，负责识别系统、共用函数和部署四个容器；准备 Docker 的逻辑拆在 `os/linux.sh`（自动安装引擎）与 `os/macos.sh`（只检查、不安装），运行时由入口 `source` 加载，不能单独执行。发行版分派集中在 `os/linux.sh`，以后新增发行版只改这一个文件。本地 HTTPS 证书由独立的 `ssl.sh` 生成（可单独重跑），nginx 监听 443 并把 80 跳转到 443。
 
 ## install.sh 做了什么
 
@@ -27,8 +27,10 @@ docker + nginx + mysql + mongodb + php 集成开发环境。
    - macOS → 只检查 Docker 是否已安装并运行，未运行则提示先启动，不做任何安装。
 3. 创建 `code/`、`www/`、`log/*`、`data/*` 目录并放开写权限。
 4. 拉取 `nginx`、`mysql`、`mongo`、`xqkeji/xqkeji` 四个镜像（失败自动重试一次）。
-5. 创建 `xqkeji-net` 网络（`172.0.0.0/24`），启动四个容器，全部 `--restart=always`。
-6. 访问 `http://127.0.0.1/` 校验站点是否真的可用，最后打印容器状态与连接信息。
+5. 创建 `xqkeji-net` 网络（`172.0.0.0/24`）。
+6. 用 `ssl.sh` 生成本地 HTTPS 证书（mkcert 本地 CA 优先，拉不到 mkcert 时退回 openssl 自签），覆盖 `localhost`、`127.0.0.1`、`*.xqkeji.dev` 等。
+7. 启动四个容器，全部 `--restart=always`；nginx 监听 443（https），并把 80 自动跳转到 443。
+8. 访问 `https://127.0.0.1/` 校验站点是否真的可用，最后打印容器状态与连接信息。
 
 ## 支持的 Linux 发行版
 
@@ -163,7 +165,7 @@ macOS 上需要注意：
 
 | 服务 | 容器名 | 宿主机端口 | 容器内 IP | 账号 |
 | --- | --- | --- | --- | --- |
-| nginx | nginx | 80 | 172.0.0.2 | — |
+| nginx | nginx | 80（跳转）、443（https） | 172.0.0.2 | — |
 | MySQL | mysql | 3306 | 172.0.0.200 | root / xqkeji.cn |
 | MongoDB | mongo | 27017 | 172.0.0.100 | root / xqkeji.cn |
 | PHP-FPM | xqkeji | 9000 | 172.0.0.10 | — |
@@ -178,7 +180,28 @@ nginx 通过 `fastcgi_pass 172.0.0.10:9000` 把 PHP 请求转给 xqkeji 容器�
 | `log/nginx/`、`log/mysql/`、`log/mongo/`、`log/php/` | 各服务日志 | `/home/log`、`/logs` |
 | `etc/` | nginx / php / mysql / mongo 配置 | 按服务挂载 |
 
-访问 `http://127.0.0.1/` 应看到 dnmmp 首页，`http://127.0.0.1/phpinfo.php` 可验证 PHP 是否打通。
+访问 `https://127.0.0.1/` 应看到 dnmmp 首页（`http://127.0.0.1/` 会 301 跳转到 https），`https://127.0.0.1/phpinfo.php` 可验证 PHP 是否打通。
+
+## HTTPS 本地证书
+
+`localhost`、`127.0.0.1` 这类名字**申请不到公网证书**（Let's Encrypt 等只给可公网验证的域名签），所以这里用的是**本地 CA**，不是公网 ACME。证书由 `ssl.sh` 生成，`install.sh` 部署时会自动调用，也可单独重跑。
+
+- **优先 mkcert（受信任，绿锁）**：`ssl.sh` 若找不到正版 mkcert，会自动从官方 GitHub 下载对应平台的二进制到 `bin/mkcert`（重试 3 次），然后 `mkcert -install` 建立本地根证书并装入系统/浏览器信任库，再签发叶子证书。
+- **兜底 openssl 自签**：拉不到 mkcert（离线、受限网络、不支持的平台）时，自动改用 openssl 生成同样域名的自签证书。https 照常可用，只是浏览器会提示「不受信任」，测试无碍。
+- **覆盖域名**：`localhost`、`127.0.0.1`、`::1`、`*.xqkeji.dev`、`xqkeji.dev`。
+- **80 → 443**：nginx 的 80 端口一律 `301` 跳转到 https（见 `etc/nginx/conf.d/default.conf`）。
+
+证书与私钥输出到 `etc/nginx/ssl/local.pem`、`local-key.pem`，挂载进 nginx 的 `/etc/nginx/ssl/`。该目录与 `bin/` 已加入 `.gitignore`，**私钥不会进 git**。已有证书时默认不重签，强制重签：
+
+```bash
+FORCE=1 ./ssl.sh
+```
+
+几点说明：
+
+- `*.xqkeji.dev` 是**本地测试占位域名**，不是公网解析。要用它访问，需在宿主机 hosts 里把具体子域指到本机，例如 `127.0.0.1 app.xqkeji.dev`，然后访问 `https://app.xqkeji.dev/`。通配符只匹配一级（`a.b.xqkeji.dev` 不匹配）。
+- **WSL2**：`ssl.sh` 在 WSL 里运行，mkcert 装的是 **WSL 内**的信任库；Windows 上的浏览器用的是 Windows 证书库，二者不相通。要让 Windows 浏览器也绿锁，用 `mkcert -CAROOT` 找到 `rootCA.pem`（在 `\\wsl$\<发行版>\home\<用户>\.local\share\mkcert\`），把它导入 Windows 的「受信任的根证书颁发机构」。
+- **Firefox** 读 NSS 信任库，Linux 上需装 `libnss3-tools`（提供 `certutil`）mkcert 才能装入；缺失时 mkcert 会提示，系统信任仍可能生效。
 
 ## 重复执行、停止与启动
 
@@ -197,7 +220,9 @@ docker logs nginx                        # 查看日志
 
 **提示 `iptables: false` 冲突**：旧版 `ubuntu.sh` / `wsl.sh` 会往 `/etc/docker/daemon.json` 写 `"iptables": false`，它会让 `-p` 端口映射失效。删掉该配置项并 `systemctl restart docker` 后重跑即可。
 
-**端口被占用**：80 / 3306 / 27017 / 9000 已被本机其它服务（含另一套 WSL 环境）占用时，容器会启动失败。先停掉占用方，或改 `install.sh` 里 `-p` 的宿主机端口。
+**端口被占用**：80 / 443 / 3306 / 27017 / 9000 已被本机其它服务（含另一套 WSL 环境）占用时，容器会启动失败。先停掉占用方，或改 `install.sh` 里 `-p` 的宿主机端口。
+
+**浏览器提示证书不受信任**：说明当前用的是 openssl 自签兜底证书（mkcert 没拉下来或没装信任）。要绿锁，装好 mkcert 后 `FORCE=1 ./ssl.sh` 重签；WSL 场景另见「HTTPS 本地证书」一节把根证书导入 Windows。
 
 **`bad interpreter: /bin/bash^M`**：脚本被改成 CRLF 换行了。仓库已用 `.gitattributes` 固定 `*.sh` 为 LF；从 Windows 手工拷贝过的副本执行 `sed -i 's/\r$//' install.sh` 修复。
 

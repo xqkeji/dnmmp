@@ -1,0 +1,23 @@
+# 本地生成的 HTTPS 证书与私钥（切勿提交）
+etc/nginx/ssl/
+
+# 自动下载的 mkcert 二进制
+bin/
+
+# 运行时数据库数据与日志（保留 .gitkeep 占位）
+data/mysql/*
+data/mongo/*
+log/nginx/*
+log/mysql/*
+log/mongo/*
+log/php/*
+!data/mysql/.gitkeep
+!data/mongo/.gitkeep
+!log/nginx/.gitkeep
+!log/mysql/.gitkeep
+!log/mongo/.gitkeep
+!log/php/.gitkeep
+
+# 用户代码目录（保留 .gitkeep 占位）
+code/*
+!code/.gitkeep
