@@ -203,6 +203,19 @@ FORCE=1 ./ssl.sh
 - **WSL2**：`ssl.sh` 在 WSL 里运行，mkcert 装的是 **WSL 内**的信任库；Windows 上的浏览器用的是 Windows 证书库，二者不相通。要让 Windows 浏览器也绿锁，用 `mkcert -CAROOT` 找到 `rootCA.pem`（在 `\\wsl$\<发行版>\home\<用户>\.local\share\mkcert\`），把它导入 Windows 的「受信任的根证书颁发机构」。
 - **Firefox** 读 NSS 信任库，Linux 上需装 `libnss3-tools`（提供 `certutil`）mkcert 才能装入；缺失时 mkcert 会提示，系统信任仍可能生效。
 
+## CRM 示例站点（crm.xqkeji.dev）
+
+`etc/nginx/conf.d/crm.conf` 是一个 CRM 虚拟主机**示例配置**（只有 nginx 配置，不含项目代码）：`server_name crm.xqkeji.dev`、443 ssl、站点根 `/home/www/crm/www`、PHP 转发 `172.0.0.10:9000`，结构与默认站一致。
+
+用法：
+
+1. 把 CRM 项目代码放到 `www/crm/www`（容器内 `/home/www/crm/www`，入口 `index.php`）。
+2. 证书已由 `ssl.sh` 覆盖 `*.xqkeji.dev`，`crm.xqkeji.dev` 直接匹配，**无需重签**。
+3. 宿主机 hosts 加一行 `127.0.0.1 crm.xqkeji.dev`，访问 `https://crm.xqkeji.dev/`。
+4. `conf.d` 整目录已挂载进 nginx，新增配置无需改 `install.sh`；已在跑的 nginx 执行 `docker exec nginx nginx -s reload` 即可生效（或重跑 `install.sh`）。
+
+`default.conf` 的 80/443 已显式设为 `default_server`，所以 `localhost`、`127.0.0.1` 及任何未匹配域名仍走默认站，只有 `crm.xqkeji.dev` 命中 CRM——避免 `crm.conf` 按字母序排在前面时抢走默认站。新增其它站点同理：写自己的 `server_name`，不要动 `default_server`。
+
 ## 重复执行、停止与启动
 
 `install.sh` 可以重复执行：已存在的四个容器会被删除重建，网络存在且网段一致时直接复用，**`data/` 里的数据库数据不会丢**。
