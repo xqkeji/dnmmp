@@ -1,114 +1,210 @@
 # dnmmp
-docker+nginx+mysql+mongodb+php集成开发环境
 
-先下载dnmmp，并解压，并将dnmmp移动到合适的路径，因为数据库数据是保存在data目录里，因此要确保有足够的空间，并尽量避免中文路径。
+docker + nginx + mysql + mongodb + php 集成开发环境。
 
-## 1. Window安装 
-### 一、安装Window的Docker Desktop
-Docker Desktop是为Windows、Mac和Linux设计的，提供了一个图形界面，使得管理容器变得简单。以下是安装Docker Desktop的步骤：
+先下载 dnmmp 并解压，把 dnmmp 目录放到合适的位置：数据库数据保存在 `data/` 目录里，要确保磁盘有足够空间，并尽量避免中文路径。
 
-（1）访问Docker官网：
+## 快速开始
 
-打开浏览器，访问Docker官网。
+| 系统 | 命令 | 前置条件 |
+| --- | --- | --- |
+| Linux（各发行版） | `./install.sh` | 无。未安装 Docker 时脚本自动安装容器引擎 |
+| Windows + WSL2 | 在 WSL 里 `./install.sh` | 已安装 WSL2 与 Linux 发行版 |
+| macOS | `./install.sh` | 已自行安装并启动 Docker Desktop / OrbStack / Colima |
+| Windows | `win.bat` | 已安装并启动 Docker Desktop |
 
-（2）下载Docker Desktop：
+`install.sh` 会自己判断操作系统，不需要再按系统挑脚本。
 
-在官网页面上，点击“Get Docker”按钮，然后选择“Docker Desktop for Windows”。
+脚本按「入口 + 分系统」组织：`install.sh` 是入口，负责识别系统、共用函数和部署四个容器；准备 Docker 的逻辑拆在 `os/linux.sh`（自动安装引擎）与 `os/macos.sh`（只检查、不安装），运行时由入口 `source` 加载，不能单独执行。发行版分派集中在 `os/linux.sh`，以后新增发行版只改这一个文件。
 
-（3）安装Docker Desktop：
+## install.sh 做了什么
 
-下载完成后，双击安装文件并按照屏幕上的指示进行安装。
+1. 识别操作系统：macOS、Linux 发行版（读 `/etc/os-release`）、是否 WSL 及 WSL 版本，并找出可用的包管理器。
+2. 准备 Docker：
+   - Linux 已装且正在运行 → 直接复用；
+   - Linux 未装 → 用发行版包管理器安装 **Docker 引擎（只有容器运行时，不安装 Docker Desktop 桌面版）**，首次安装且没有 `/etc/docker/daemon.json` 时写入镜像加速配置，然后启动服务并设为开机自启；
+   - Linux 非 root 执行 → 自动用 `sudo` 重新执行；
+   - macOS → 只检查 Docker 是否已安装并运行，未运行则提示先启动，不做任何安装。
+3. 创建 `code/`、`www/`、`log/*`、`data/*` 目录并放开写权限。
+4. 拉取 `nginx`、`mysql`、`mongo`、`xqkeji/xqkeji` 四个镜像（失败自动重试一次）。
+5. 创建 `xqkeji-net` 网络（`172.0.0.0/24`），启动四个容器，全部 `--restart=always`。
+6. 访问 `http://127.0.0.1/` 校验站点是否真的可用，最后打印容器状态与连接信息。
 
-（4）启动Docker Desktop：
+## 支持的 Linux 发行版
 
-安装完成后，启动Docker Desktop。首次启动时，它可能会要求你允许一些权限或配置一些设置。
+按包管理器分派，覆盖主流发行版及其衍生版：
 
-（5）验证安装：
+| 发行版 | 包管理器 | Docker 安装方式 |
+| --- | --- | --- |
+| Debian、Ubuntu、Mint、Deepin、UOS 等 | apt | `docker.io`；仓库没有时用 Docker 官方安装脚本 |
+| CentOS、RHEL、Rocky、AlmaLinux、Anolis 等 | dnf / yum | `docker-engine` → `moby-engine` → 自建 Docker CE 仓库（阿里云 centos 镜像） |
+| Fedora | dnf | `moby-engine` → 自建 Docker CE 仓库（阿里云 fedora 镜像） |
+| openEuler | dnf | `docker-engine` → 自建 Docker CE 仓库 |
+| openSUSE、SLES | zypper | `docker`；失败时用 Docker 官方安装脚本 |
+| Arch、Manjaro | pacman | `docker` |
+| Alpine | apk | `docker`（Alpine 需先 `apk add bash`，脚本用 bash 编写） |
 
-打开命令提示符或PowerShell，输入以下命令来验证Docker是否正确安装：
+「自建 Docker CE 仓库」指脚本直接写 `/etc/yum.repos.d/docker-ce.repo`，baseurl 指向 `https://mirrors.aliyun.com/docker-ce/linux/centos/$releasever/$basearch/stable`，再安装 `docker-ce docker-ce-cli containerd.io`。EL 衍生版统一走 centos 路径，因为阿里云镜像站没有 `rocky`/`almalinux` 目录——官方 `get.docker.com --mirror Aliyun` 在 Rocky 上会拼出 404 的仓库地址。
 
-docker --version
+「Docker 官方安装脚本」指 `https://get.docker.com`，先以 `--mirror Aliyun` 调用，失败再不带镜像重试一次。
 
-如果显示版本号，则表示Docker已成功安装。
+WSL2 里的发行版按上表同样处理；**WSL1 无法运行 Docker 引擎**，脚本会直接提示先升级到 WSL2。如果在 Windows 上装了 Docker Desktop 并开启了该发行版的 WSL 集成，脚本会直接复用，不再重复安装引擎。
 
-### 二、安装dnmmp服务
+## 1. Linux 安装
 
-进入dnmmp目录，直接执行win.bat文件，执行后会自动拉取nginx、mongodb、mysql、xqkeji（PHP）等镜像，并自动启动名称为
-nginx、mongodb、mysql、xqkeji等容器服务：nginx(80)、mysql(3306）、mongodb（27017）、php-fpm(9000)。
-服务安装后，docker启动，就自动启动服务。
+进入 dnmmp 目录后执行：
 
-## 2. Window+WSL2安装
-### 一、安装WSL2的Ubuntu应用
+```bash
+cd dnmmp
+chmod +x install.sh
+./install.sh
+```
 
-（1）检查CPU是否开启虚拟化技术
-在Window打开“任务管理器”，然后点击“性能选项卡”，再点击进入“CPU”详细页。 在CPU的信息中，有显示“虚拟化：已启用”说明CPU有开启虚拟化技术。 如果没有开启，需要重启电脑进入主板的BIOS管理程序，启用CPU的虚拟机技术。
+普通用户执行即可，安装 Docker 需要 root 权限时脚本会自动 `sudo`。没有 `sudo` 的机器请用 root 执行 `bash install.sh`。
 
-（2）开启WSL功能
-右键任务栏的“开始”图标，进入“系统信息”选项页，回退到“系统”页，再点击进入“可选功能”页，然后滚动到页面底部，见到“相关设置”后，点击“更多Window功能”。 点击开启“适用于Linux的Windows子系统”选项和“虚拟机平台”再点击“确定”，系统重启后，就开启了WSL的功能。
+执行完成后会自动拉取镜像并启动 nginx、mysql、mongo、xqkeji（php-fpm）四个容器。Docker 服务已设为开机自启，容器为 `--restart=always`，重启机器后环境自动恢复。
 
-（3）检查WSL
-为了避免不必要的错误，建议使用前先升级wsl,打开一个命令行窗口，并输入命令：
+## 2. Windows + WSL2 安装
 
+### 一、安装 WSL2 的 Ubuntu 应用
+
+（1）检查 CPU 是否开启虚拟化技术
+
+在 Windows 打开「任务管理器」→「性能」→「CPU」，信息里显示「虚拟化：已启用」说明已开启。若未开启，需要重启进入主板 BIOS 启用 CPU 虚拟化技术。
+
+（2）开启 WSL 功能
+
+右键任务栏「开始」图标 →「系统」→「可选功能」→ 页面底部「相关设置」→「更多 Windows 功能」，勾选「适用于 Linux 的 Windows 子系统」和「虚拟机平台」，确定后重启。
+
+（3）检查并升级 WSL
+
+```powershell
 wsl --update
-更新完成后，可以查看wsl的状态。
-
 wsl --status
-状态中的默认版本号需要为0
+```
 
-默认版本：2
-如果默认版本不为2，需要修改默认版本号。
+状态里的「默认版本」需要为 **2**。若不是 2：
 
+```powershell
 wsl --set-default-version 2
-（4）安装ubuntu应用
-可以从window“开始”菜单进入“Microsoft Store"，在应用商店中搜索”ubuntu"并安装该应用。 安装完成后可以通过以下命令启动"ubuntu"应用。
+```
 
+已装好的发行版若是 WSL1，需要单独转换（脚本检测到 WSL1 会报错并给出该命令）：
+
+```powershell
+wsl --set-version Ubuntu 2
+```
+
+（4）安装 Ubuntu 应用
+
+从「开始」菜单打开 Microsoft Store，搜索 Ubuntu 并安装。安装完成后可以用命令启动：
+
+```powershell
 wsl -d ubuntu
-也可以在“开始”的“应用列表”直接点击“Ubuntu”图标来进入“ubuntu"。
-### 二、安装dnmmp服务
-进入"ubuntu"应用后，执行命令进入dnmmp的目录：
-/mnt/d/为D盘、/mnt/e/为E盘，假设dnmmp的目录在D盘，可以执行：
-cd /mnt/d/dnmmp（dnmmp可能还带版本号，根据实际情况定）
+```
 
-然后执行:./wsl.sh，执行后会自动拉取nginx、mongodb、mysql、xqkeji（PHP）等镜像，并自动启动名称为
-nginx、mongodb、mysql、xqkeji等容器服务：nginx(80)、mysql(3306）、mongodb（27017）、php-fpm(9000)。
-服务安装后，一打开ubuntu应用，就自动开启服务。
+也可以在「开始」菜单的应用列表里直接点 Ubuntu 图标进入。
 
-## 3. Ubuntu(Linux操作系统)安装
-直接进入dnmmp目录，并执行：./ubuntu.sh，执行后会自动拉取nginx、mongodb、mysql、xqkeji（PHP）等镜像，并自动启动名称为
-nginx、mongodb、mysql、xqkeji等容器服务：nginx(80)、mysql(3306）、mongodb（27017）、php-fpm(9000)。
-服务安装后，一打开ubuntu应用，就自动开启服务。
+### 二、安装 dnmmp 服务
 
-## 4. MacOS安装
-### 一、安装MacOS的Docker Desktop
-在Mac上安装Docker，有两种主要的方法：使用Docker Desktop（官方推荐的图形化安装方式）或通过命令行使用Docker Engine。以下是两种方法的详细步骤：
+进入 Ubuntu 后，切到 dnmmp 目录（`/mnt/d/` 是 D 盘、`/mnt/e/` 是 E 盘，假设 dnmmp 在 D 盘）：
 
-(1)前往Docker官网下载
+```bash
+cd /mnt/d/dnmmp
+./install.sh
+```
 
-打开浏览器，访问 Docker官网。
+后续行为与 Linux 一致。注意两点：
 
-点击“Get Docker”按钮，然后选择适用于Mac的Docker Desktop版本。
+- 若 Windows 上的 Docker Desktop 已开启本发行版的 WSL 集成，请先启动 Docker Desktop，脚本会直接复用它；脚本不会在 WSL 里重复安装引擎。
+- 若要在 WSL 内独立安装引擎，建议开启 systemd（`/etc/wsl.conf` 里 `[boot] systemd=true`，改完在 Windows 执行 `wsl --shutdown` 后重进），这样 Docker 才能随发行版启动自启；没有 systemd 时脚本会用 `service docker start` 启动，但重开窗口后需要再执行一次 `./install.sh`。
 
-(2)安装Docker Desktop
+## 3. macOS 安装
 
-下载完成后，打开下载的.dmg文件。
+### 一、先装好 Docker
 
-将Docker拖到“Applications”文件夹中以完成安装。
+macOS 上脚本**不会**自动安装 Docker，需要自行安装并启动其中一种：
 
-(3)启动Docker Desktop
+- Docker Desktop：官网下载 `.dmg`，把 Docker 拖进「应用程序」，然后启动它；
+- 或 OrbStack / Colima 等提供 `docker` 命令与 Docker 守护进程的运行时。
 
-打开“Applications”文件夹，双击Docker图标以启动应用。
+启动后在终端验证：
 
-首次运行可能需要一些时间来设置和下载Docker镜像。
-
-(4)验证安装
-
-打开终端（Terminal），输入以下命令来验证Docker是否正确安装：
-
+```bash
 docker --version
+docker info
+```
 
-这将显示已安装的Docker版本。
-### 二、安装dnmmp服务
+`docker info` 能输出服务端信息才算就绪。脚本会做同样的检查，未就绪时直接提示先启动，不会继续往下跑。
 
-通过终端（Terminal）进入dnmmp目录，直接执行mac.sh文件，执行后会自动拉取nginx、mongodb、mysql、xqkeji（PHP）等镜像，并自动启动名称为
-nginx、mongodb、mysql、xqkeji等容器服务：nginx(80)、mysql(3306）、mongodb（27017）、php-fpm(9000)。
-服务安装后，docker启动，就自动启动服务。
+### 二、安装 dnmmp 服务
+
+```bash
+cd dnmmp
+chmod +x install.sh
+./install.sh
+```
+
+macOS 上需要注意：
+
+- **文件共享**：dnmmp 目录必须在 Docker Desktop 的 Settings → Resources → File Sharing 列表里（默认已共享 `/Users`、`/Volumes`、`/tmp`、`/private`）。放在其它位置时容器会挂载失败。
+- **Apple Silicon（M 系列芯片）**：`xqkeji/xqkeji` 镜像是 `linux/amd64`，需要 Docker Desktop 开启 Settings → General →「Use Rosetta for x86/amd64 emulation」才能运行。是否有 arm64 版本可以用这条命令确认：`docker manifest inspect xqkeji/xqkeji`。
+- macOS 上 `--net=host` 指的是 Docker 虚拟机而不是 Mac 本机，所以四个容器统一走 `xqkeji-net` 桥接网络 + 端口发布，访问地址一律是 `127.0.0.1`。
+
+## 4. Windows 安装
+
+先安装并启动 Docker Desktop（官网 → Get Docker → Docker Desktop for Windows），在命令提示符里用 `docker --version` 验证。
+
+然后进入 dnmmp 目录，双击或在命令行执行 `win.bat`。
+
+## 服务、端口与目录
+
+四个容器都接在 `xqkeji-net`（`172.0.0.0/24`）上，宿主机统一通过 `127.0.0.1` 访问：
+
+| 服务 | 容器名 | 宿主机端口 | 容器内 IP | 账号 |
+| --- | --- | --- | --- | --- |
+| nginx | nginx | 80 | 172.0.0.2 | — |
+| MySQL | mysql | 3306 | 172.0.0.200 | root / xqkeji.cn |
+| MongoDB | mongo | 27017 | 172.0.0.100 | root / xqkeji.cn |
+| PHP-FPM | xqkeji | 9000 | 172.0.0.10 | — |
+
+nginx 通过 `fastcgi_pass 172.0.0.10:9000` 把 PHP 请求转给 xqkeji 容器（见 `etc/nginx/conf.d/default.conf`）。
+
+| 目录 | 用途 | 容器内路径 |
+| --- | --- | --- |
+| `www/default/` | 站点根目录 | `/home/www/default` |
+| `code/` | 框架代码 | `/home/code` |
+| `data/mysql/`、`data/mongo/` | 数据库数据 | `/var/lib/mysql`、`/data/db` |
+| `log/nginx/`、`log/mysql/`、`log/mongo/`、`log/php/` | 各服务日志 | `/home/log`、`/logs` |
+| `etc/` | nginx / php / mysql / mongo 配置 | 按服务挂载 |
+
+访问 `http://127.0.0.1/` 应看到 dnmmp 首页，`http://127.0.0.1/phpinfo.php` 可验证 PHP 是否打通。
+
+## 重复执行、停止与启动
+
+`install.sh` 可以重复执行：已存在的四个容器会被删除重建，网络存在且网段一致时直接复用，**`data/` 里的数据库数据不会丢**。
+
+```bash
+docker stop nginx mysql mongo xqkeji     # 停止
+docker start nginx mysql mongo xqkeji    # 启动
+docker ps --filter network=xqkeji-net    # 查看状态
+docker logs nginx                        # 查看日志
+```
+
+## 常见问题
+
+**镜像拉取失败**：脚本首次安装 Docker 时会写入 `/etc/docker/daemon.json` 配置镜像加速（`https://docker.m.daocloud.io`）；已存在该文件时保留原配置不动。该加速站会代理并缓存 Docker Hub 上游，`xqkeji/xqkeji` 也能经它拉取（已实测：manifest 与全部 blob 均返回 200）。若拉取仍失败，多为网络中断（表现为 `unexpected EOF`），重跑脚本即可；也可换成其它可用的 `registry-mirrors`，改完 `systemctl restart docker` 再重跑。
+
+**提示 `iptables: false` 冲突**：旧版 `ubuntu.sh` / `wsl.sh` 会往 `/etc/docker/daemon.json` 写 `"iptables": false`，它会让 `-p` 端口映射失效。删掉该配置项并 `systemctl restart docker` 后重跑即可。
+
+**端口被占用**：80 / 3306 / 27017 / 9000 已被本机其它服务（含另一套 WSL 环境）占用时，容器会启动失败。先停掉占用方，或改 `install.sh` 里 `-p` 的宿主机端口。
+
+**`bad interpreter: /bin/bash^M`**：脚本被改成 CRLF 换行了。仓库已用 `.gitattributes` 固定 `*.sh` 为 LF；从 Windows 手工拷贝过的副本执行 `sed -i 's/\r$//' install.sh` 修复。
+
+**Alpine 上提示找不到 bash**：先 `apk add bash`。
+
+## 开源协议
+
+本项目采用 **AGPL-3.0-or-later**（GNU Affero 通用公共许可证第 3 版或更新版本），完整文本见 [LICENSE](LICENSE)。
+
+与普通 GPL 相比，AGPL 额外要求：如果你修改本程序并**通过网络向用户提供服务**，也必须向这些用户提供修改后的完整源码。集成或二次分发时请保留版权与许可声明。
