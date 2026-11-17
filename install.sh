@@ -144,7 +144,7 @@ ensure_network() {
 run_containers() {
     info "启动 nginx 容器"
     docker run -d --name nginx --restart=always \
-        --network "$NET_NAME" --ip "$IP_NGINX" -p 80:80 \
+        --network "$NET_NAME" --ip "$IP_NGINX" -p 80:80 -p 443:443 \
         -v "$BASE_DIR/www:/home/www" \
         -v "$BASE_DIR/log/nginx:/home/log" \
         -v "$BASE_DIR/etc/nginx/nginx.conf:/etc/nginx/nginx.conf" \

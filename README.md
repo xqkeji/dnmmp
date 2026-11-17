@@ -159,6 +159,12 @@ macOS 上需要注意：
 
 然后进入 dnmmp 目录，双击或在命令行执行 `win.bat`。
 
+`win.bat` 是 `install.sh` 的 Windows 原生批处理版（`install.sh` 不在 Windows Git Bash 里运行），用已装好的 Docker Desktop 完成等价部署：检查 Docker → 建目录 → 拉取四个镜像（失败重试一次）→ 删除重建已存在的容器（`data/` 数据保留）→ 确保 `xqkeji-net`（`172.0.0.0/24`）→ 生成本地 HTTPS 证书 → 启动 nginx/mysql/mongo/xqkeji 四个容器（nginx 监听 443 https、80 跳转 443，全部 `--restart=always`）→ 校验 `https://127.0.0.1/` → 打印状态与连接信息。可重复执行。
+
+证书优先下载 `mkcert.exe` 到 `bin/`（受信任，绿锁），拉不到时退回宿主 `openssl` 自签（浏览器提示不受信任，测试无碍），覆盖域名与 `ssl.sh` 一致；已有证书默认不重签，强制重签：`win.bat force`（或 `set FORCE=1` 后重跑 `win.bat`）。`bin/` 与 `etc/nginx/ssl/` 已在 `.gitignore` 里，私钥不进 git。
+
+dnmmp 目录需在 Docker Desktop 的共享盘里（WSL2 后端默认共享所有本地盘），否则容器挂载会失败。
+
 ## 服务、端口与目录
 
 四个容器都接在 `xqkeji-net`（`172.0.0.0/24`）上，宿主机统一通过 `127.0.0.1` 访问：
