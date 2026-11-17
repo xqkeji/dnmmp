@@ -381,7 +381,7 @@ exit /b 0
 REM ===================== add-site: register one local site =====================
 REM win.bat site <name> [project-dir]
 REM
-REM The Windows counterpart of add-site.sh: writes etc\nginx\conf.d\<name>.conf,
+REM The Windows counterpart of bin/add-site.sh: writes etc\nginx\conf.d\<name>.conf,
 REM adds 127.0.0.1 <name>.xqkeji.dev to hosts, then reloads nginx in its
 REM container. Does NOT redeploy anything, so it is safe to run on a live env.
 REM

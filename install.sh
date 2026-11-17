@@ -203,7 +203,7 @@ summary() {
 
 站点目录：$BASE_DIR/www/default
 访问地址：https://127.0.0.1/（http://127.0.0.1/ 自动跳转 https）
-新增站点：./add-site.sh <name> [project-dir]（nginx 配置 + hosts + 重载，例 ./add-site.sh crm）
+新增站点：./bin/add-site.sh <name> [project-dir]（nginx 配置 + hosts + 重载，例 ./bin/add-site.sh crm）
 MySQL   ：127.0.0.1:3306   root / xqkeji.cn
 MongoDB ：127.0.0.1:27017  root / xqkeji.cn
 PHP-FPM ：127.0.0.1:9000   容器内 $IP_PHP:9000

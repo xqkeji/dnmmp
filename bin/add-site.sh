@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ####################################
 # desc: 为已有项目登记一个本地站点：nginx 虚拟主机 + hosts 解析 + 重载 nginx
-# usage: ./add-site.sh <name> [project-dir]
+# usage: ./bin/add-site.sh <name> [project-dir]
 # author: xqkeji.cn
 # Copyright (C) 2025-2026 xqkeji.cn
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -19,7 +19,8 @@
 # fast-admin 的 post-create 钩子找到本脚本就会自动调用它。
 set -euo pipefail
 
-BASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# 本脚本在 bin/ 里，环境根目录是它的上一级（与 ssl.sh 的 BASE_DIR 含义一致）
+BASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 DOMAIN_SUFFIX=xqkeji.dev
 CONF_DIR="$BASE_DIR/etc/nginx/conf.d"
 # 与 install.sh 的 IP_PHP 一致；nginx 容器通过它连 php-fpm
@@ -33,10 +34,10 @@ die() { printf '\033[31m[错误]\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<EOF
-用法：./add-site.sh <name> [project-dir]
+用法：./bin/add-site.sh <name> [project-dir]
       name 会成为 <name>.${DOMAIN_SUFFIX}，project-dir 默认为 www/<name>
-      例：./add-site.sh crm
-          ./add-site.sh crm "$BASE_DIR/www/default/crm"
+      例：./bin/add-site.sh crm
+          ./bin/add-site.sh crm "$BASE_DIR/www/default/crm"
 EOF
     exit 1
 }

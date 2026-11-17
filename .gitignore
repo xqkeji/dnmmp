@@ -1,8 +1,10 @@
 # 本地生成的 HTTPS 证书与私钥（切勿提交）
 etc/nginx/ssl/
 
-# 自动下载的 mkcert 二进制
-bin/
+# 自动下载的 mkcert 二进制（bin/add-site.sh 是仓库自带的脚本，要入库；
+# 写成 bin/* 而不是 bin/，否则 git 不会进入该目录，下面的例外无效）
+bin/*
+!bin/add-site.sh
 
 # 运行时数据库数据与日志（保留 .gitkeep 占位）
 data/mysql/*
