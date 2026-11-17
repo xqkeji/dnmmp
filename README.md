@@ -205,7 +205,7 @@ FORCE=1 ./ssl.sh
 
 几点说明：
 
-- `*.xqkeji.dev` 是**本地测试占位域名**，不是公网解析。要用它访问，需在宿主机 hosts 里把具体子域指到本机，例如 `127.0.0.1 app.xqkeji.dev`，然后访问 `https://app.xqkeji.dev/`。通配符只匹配一级（`a.b.xqkeji.dev` 不匹配）。
+- `*.xqkeji.dev` 是**本地测试占位域名**，不是公网解析。要用它访问，需在宿主机 hosts 里把具体子域指到本机，例如 `127.0.0.1 app.xqkeji.dev`，然后访问 `https://app.xqkeji.dev/`；这一步连同 nginx 配置可以用 `./add-site.sh app` 自动完成，见「新增本地站点」。通配符只匹配一级（`a.b.xqkeji.dev` 不匹配）。
 - **WSL2**：`ssl.sh` 在 WSL 里运行，mkcert 装的是 **WSL 内**的信任库；Windows 上的浏览器用的是 Windows 证书库，二者不相通。要让 Windows 浏览器也绿锁，用 `mkcert -CAROOT` 找到 `rootCA.pem`（在 `\\wsl$\<发行版>\home\<用户>\.local\share\mkcert\`），把它导入 Windows 的「受信任的根证书颁发机构」。
 - **Firefox** 读 NSS 信任库，Linux 上需装 `libnss3-tools`（提供 `certutil`）mkcert 才能装入；缺失时 mkcert 会提示，系统信任仍可能生效。
 
@@ -217,10 +217,36 @@ FORCE=1 ./ssl.sh
 
 1. 把 CRM 项目代码放到 `www/crm/www`（容器内 `/home/www/crm/www`，入口 `index.php`）。
 2. 证书已由 `ssl.sh` 覆盖 `*.xqkeji.dev`，`crm.xqkeji.dev` 直接匹配，**无需重签**。
-3. 宿主机 hosts 加一行 `127.0.0.1 crm.xqkeji.dev`，访问 `https://crm.xqkeji.dev/`。
+3. 宿主机 hosts 加一行 `127.0.0.1 crm.xqkeji.dev`，访问 `https://crm.xqkeji.dev/`。放好代码后执行 `./add-site.sh crm`（Windows 用 `win.bat site crm`）会自动加这一行；`crm.conf` 已存在，脚本不会覆盖它。
 4. `conf.d` 整目录已挂载进 nginx，新增配置无需改 `install.sh`；已在跑的 nginx 执行 `docker exec nginx nginx -s reload` 即可生效（或重跑 `install.sh`）。
 
 `default.conf` 的 80/443 已显式设为 `default_server`，所以 `localhost`、`127.0.0.1` 及任何未匹配域名仍走默认站，只有 `crm.xqkeji.dev` 命中 CRM——避免 `crm.conf` 按字母序排在前面时抢走默认站。新增其它站点同理：写自己的 `server_name`，不要动 `default_server`。
+
+## 新增本地站点
+
+`add-site.sh`（Linux / macOS）与 `win.bat site`（Windows）一条命令登记一个本地站点，不必重跑 `install.sh`：
+
+```bash
+./add-site.sh crm                                  # 项目目录默认 www/crm
+./add-site.sh crm "/path/to/dnmmp/www/default/crm"  # 也可显式指定
+```
+
+```bat
+win.bat site crm
+win.bat site crm "D:\dnmmp\www\default\crm"
+```
+
+做三件事：
+
+1. 生成 `etc/nginx/conf.d/<name>.conf`：443 ssl（证书用 `etc/nginx/ssl/local.pem`）、`server_name <name>.xqkeji.dev`、`error_log /home/log/<name>.log`、PHP 转发 `172.0.0.10:9000`，并带上 `asset/`、`upload/` 目录禁止执行 PHP 的规则。root 写的是容器内路径：宿主机 `www/` 就是容器 `/home/www/`，所以**项目必须放在 `www/` 下**，脚本自己换算，放在外面直接报错。站点入口目录是 `<项目目录>/www`，不存在就报错，不写任何配置。
+2. 宿主机 hosts 追加 `127.0.0.1 <name>.xqkeji.dev`。Linux / macOS 没有写权限时走 `sudo`；Windows 先直接写，被拒绝就弹一次 UAC 提权重试。
+3. `docker exec nginx nginx -t` 通过后 `docker exec nginx nginx -s reload`。nginx 容器没在跑就跳过重载，下次启动自然用新配置。
+
+**幂等**：`<name>.conf` 已存在、或 `<name>.xqkeji.dev` 已被 `conf.d` 里其它配置使用，就跳过生成；hosts 里已有该域名（大小写不同、与其它域名写在同一行都算已有）就跳过追加。重复执行不会覆盖手工改过的配置。`nginx -t` 不通过时会删掉刚生成的配置再报错，原有站点不受影响；还没签证书时只提示先跑 `ssl.sh`。
+
+新站点只写自己的 `server_name`，不碰 `default.conf` 的 `default_server`。
+
+fast-admin 用 `composer create-project` 建项目时会自动向上找到并执行本脚本。**在 php 容器里创建的项目看不到环境根目录**（容器只挂载了 `www`），这时脚本不执行、只打印提示，回到宿主机补上面那条命令即可。
 
 ## 重复执行、停止与启动
 
