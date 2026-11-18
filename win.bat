@@ -11,6 +11,9 @@ REM (172.0.0.0/24) with static IPs; nginx listens on 443 (https) and redirects 8
 REM Local HTTPS cert: mkcert.exe first (downloaded into bin\), openssl self-signed fallback.
 REM Re-runnable: existing containers are removed and recreated, data\ is preserved.
 REM Force re-issue cert: win.bat force  (or set FORCE=1 then re-run win.bat).
+REM MySQL is optional: the installer asks [Y/n], default is install.
+REM Unattended skip: win.bat no-mysql  (combinable: win.bat force no-mysql).
+REM Start/stop installed containers: win.bat start / win.bat stop.
 REM Register one local site: win.bat site <name> [project-dir]  (vhost + hosts + reload).
 REM
 REM NOTE: cmd.exe mis-parses unquoted UTF-8 Chinese on echo/REM lines under chcp 65001,
@@ -19,10 +22,17 @@ REM (the same pattern wnmmp\bin\make-ssl.bat uses). Keep command lines ASCII.
 
 cd /d "%~dp0"
 set "BASE=%CD%"
-if /i "%~1"=="force" set "FORCE=1"
+set "FORCE=0"
+set "NO_MYSQL=0"
+for %%a in (%1 %2) do (
+  if /i "%%~a"=="force" set "FORCE=1"
+  if /i "%%~a"=="no-mysql" set "NO_MYSQL=1"
+)
 REM win.bat site <name> [project-dir] -- register one local site without
 REM redeploying: nginx vhost + hosts entry + reload. See :add_site below.
 if /i "%~1"=="site" goto :add_site
+if /i "%~1"=="start" goto :start_env
+if /i "%~1"=="stop" goto :stop_env
 
 echo ==============================================================
 set "MSG= dnmmp 部署（Windows + Docker Desktop）"
@@ -33,6 +43,7 @@ echo ==============================================================
 echo.
 
 call :check_docker || goto :fail
+call :ask_mysql
 call :prepare_dirs || goto :fail
 call :pull_images || goto :fail
 call :remove_old || goto :fail
@@ -53,6 +64,40 @@ set "MSG=部署未完成，请根据上面的错误处理后重新运行 win.bat
 echo !MSG!
 pause
 exit /b 1
+
+REM ===================== ask whether to install MySQL =====================
+REM Default is install (Enter or y). n skips it; data\mysql is preserved.
+REM win.bat no-mysql skips the prompt entirely (unattended opt-out).
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:ask_mysql
+set "WITH_MYSQL=1"
+if "%NO_MYSQL%"=="1" (
+  set "WITH_MYSQL=0"
+  set "MSG=按参数跳过 MySQL 容器（data\mysql 旧数据保留）"
+  echo !MSG!
+  exit /b 0
+)
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:ask_mysql_prompt
+set "MSG=是否安装 MySQL 容器？[Y/n]（默认安装）: "
+set /p "=!MSG!" <nul
+set "MYSQL_ANS="
+set /p "MYSQL_ANS="
+if "!MYSQL_ANS!"=="" exit /b 0
+if /i "!MYSQL_ANS!"=="y" exit /b 0
+if /i "!MYSQL_ANS!"=="n" (
+  set "WITH_MYSQL=0"
+  set "MSG=跳过 MySQL 容器（data\mysql 旧数据保留）"
+  echo !MSG!
+  exit /b 0
+)
+set "MSG=[警告] 请输入 y 或 n（直接回车默认安装）"
+echo !MSG!
+goto :ask_mysql_prompt
 
 REM ===================== check Docker Desktop =====================
 :check_docker
@@ -76,7 +121,10 @@ exit /b 0
 
 REM ===================== prepare dirs and required config =====================
 :prepare_dirs
-for %%d in (code www log\nginx log\mysql log\mongo log\php data\mysql data\mongo etc\nginx\ssl) do (
+for %%d in (code www log\nginx log\mongo log\php data\mongo etc\nginx\ssl) do (
+  if not exist "%BASE%\%%d" md "%BASE%\%%d"
+)
+if "%WITH_MYSQL%"=="1" for %%d in (log\mysql data\mysql) do (
   if not exist "%BASE%\%%d" md "%BASE%\%%d"
 )
 for %%f in (etc\nginx\nginx.conf etc\php\php.ini etc\mongo\mongodb.conf) do (
@@ -86,31 +134,48 @@ for %%f in (etc\nginx\nginx.conf etc\php\php.ini etc\mongo\mongodb.conf) do (
     exit /b 1
   )
 )
-for %%d in (etc\nginx\conf.d etc\mysql) do (
+for %%d in (etc\nginx\conf.d) do (
   if not exist "%BASE%\%%d" (
     set "MSG=[错误] 缺少 %%d 目录，请在完整的 dnmmp 目录内运行 win.bat"
     echo !MSG!
     exit /b 1
   )
 )
+if "%WITH_MYSQL%"=="1" if not exist "%BASE%\etc\mysql" (
+  set "MSG=[错误] 缺少 etc\mysql 目录，请在完整的 dnmmp 目录内运行 win.bat"
+  echo !MSG!
+  exit /b 1
+)
 exit /b 0
 
 REM ===================== pull images (retry once on failure) =====================
 :pull_images
 for %%i in (nginx mysql mongo xqkeji/xqkeji) do (
-  set "MSG=拉取镜像 %%i"
+  if /i "%%i"=="mysql" (
+    if "%WITH_MYSQL%"=="1" call :pull_one %%i || exit /b 1
+  ) else (
+    call :pull_one %%i || exit /b 1
+  )
+)
+exit /b 0
+
+REM ---- pull one image, retry once after 5 seconds ----
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:pull_one
+set "MSG=拉取镜像 %~1"
+echo !MSG!
+docker pull %~1
+if errorlevel 1 (
+  set "MSG=[警告] 拉取 %~1 失败，5 秒后重试"
   echo !MSG!
-  docker pull %%i
+  timeout /t 5 >nul
+  docker pull %~1
   if errorlevel 1 (
-    set "MSG=[警告] 拉取 %%i 失败，5 秒后重试"
+    set "MSG=[错误] 镜像 %~1 拉取失败。请检查网络，或在 Docker Desktop 配置可用的 registry-mirrors 后重试。"
     echo !MSG!
-    timeout /t 5 >nul
-    docker pull %%i
-    if errorlevel 1 (
-      set "MSG=[错误] 镜像 %%i 拉取失败。请检查网络，或在 Docker Desktop 配置可用的 registry-mirrors 后重试。"
-      echo !MSG!
-      exit /b 1
-    )
+    exit /b 1
   )
 )
 exit /b 0
@@ -121,6 +186,7 @@ for %%c in (nginx mysql mongo xqkeji) do (
   docker container inspect %%c >nul 2>&1
   if not errorlevel 1 (
     set "MSG=重新创建已存在的容器 %%c（数据库数据保留在 data\ 目录）"
+    if /i "%%c"=="mysql" if "%WITH_MYSQL%"=="0" set "MSG=按选择移除已存在的 mysql 容器（数据保留在 data\mysql）"
     echo !MSG!
     docker rm -f %%c >nul 2>&1
   )
@@ -282,6 +348,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
+if "%WITH_MYSQL%"=="0" goto :run_mongo
 set "MSG=启动 mysql 容器"
 echo !MSG!
 docker run -d --name mysql --restart=always ^
@@ -297,6 +364,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
+REM ---- mysql block above is skipped when WITH_MYSQL=0 ----
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:run_mongo
 set "MSG=启动 mongo 容器"
 echo !MSG!
 docker run -d --name mongo --restart=always ^
@@ -359,7 +431,11 @@ set "MSG=站点目录：%BASE%\www\default"
 echo !MSG!
 set "MSG=访问地址：https://127.0.0.1/（http://127.0.0.1/ 自动跳转 https）"
 echo !MSG!
-set "MSG=MySQL   ：127.0.0.1:3306   root / xqkeji.cn"
+if "%WITH_MYSQL%"=="1" (
+  set "MSG=MySQL   ：127.0.0.1:3306   root / xqkeji.cn"
+) else (
+  set "MSG=MySQL   ：本次未安装（data\mysql 旧数据保留；需要时重跑 win.bat 并确认安装）"
+)
 echo !MSG!
 set "MSG=MongoDB ：127.0.0.1:27017  root / xqkeji.cn"
 echo !MSG!
@@ -372,7 +448,7 @@ echo !MSG!
 echo.
 set "MSG=容器已设置 --restart=always，Docker 启动后会自动运行。"
 echo !MSG!
-set "MSG=常用命令：docker stop nginx mysql mongo xqkeji / docker start nginx mysql mongo xqkeji"
+set "MSG=常用命令：win.bat start 启动 / win.bat stop 停止（Linux/macOS：./start.sh / ./stop.sh）"
 echo !MSG!
 set "MSG=子域名用 win.bat site <name> 自动登记（nginx 配置 + hosts + 重载），例如：win.bat site crm"
 echo !MSG!
@@ -684,3 +760,76 @@ REM ----
 REM ----
 :site_fail
 exit /b 1
+
+REM ===================== start / stop installed containers =====================
+REM win.bat start / win.bat stop -- operate on whichever of the four containers
+REM exist (no state file); a missing mysql is normal when it was not installed.
+REM start also ensures xqkeji-net exists. data\ is never touched.
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:start_env
+call :check_docker || goto :fail
+call :ensure_network || goto :fail
+set "FOUND=0"
+for %%c in (nginx mysql mongo xqkeji) do (
+  docker container inspect %%c >nul 2>&1
+  if not errorlevel 1 (
+    set "FOUND=1"
+    docker start %%c >nul
+    if errorlevel 1 (
+      set "MSG=[错误] 启动 %%c 失败（常见原因：端口被占用），详见 docker logs %%c"
+      echo !MSG!
+      goto :fail
+    )
+    set "MSG=[√] 已启动 %%c"
+    echo !MSG!
+  ) else (
+    set "MSG=跳过 %%c（容器不存在；MySQL 未安装属正常，其余请先运行 win.bat 部署）"
+    echo !MSG!
+  )
+)
+if "!FOUND!"=="0" (
+  set "MSG=[错误] 未找到任何 dnmmp 容器，请先运行 win.bat 部署。"
+  echo !MSG!
+  goto :fail
+)
+docker ps --filter "network=xqkeji-net" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+set "MSG=访问地址：https://127.0.0.1/（http://127.0.0.1/ 自动跳转 https）"
+echo !MSG!
+pause
+exit /b 0
+
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:stop_env
+call :check_docker || goto :fail
+set "FOUND=0"
+for %%c in (nginx mysql mongo xqkeji) do (
+  docker container inspect %%c >nul 2>&1
+  if not errorlevel 1 (
+    set "FOUND=1"
+    docker stop %%c >nul
+    if errorlevel 1 (
+      set "MSG=[错误] 停止 %%c 失败，请手动执行：docker stop %%c"
+      echo !MSG!
+      goto :fail
+    )
+    set "MSG=[√] 已停止 %%c"
+    echo !MSG!
+  ) else (
+    set "MSG=跳过 %%c（容器不存在）"
+    echo !MSG!
+  )
+)
+if "!FOUND!"=="0" (
+  set "MSG=[错误] 未找到任何 dnmmp 容器，请先运行 win.bat 部署。"
+  echo !MSG!
+  goto :fail
+)
+docker ps -a --filter "network=xqkeji-net" --format "table {{.Names}}\t{{.Status}}"
+set "MSG=数据保留在 %BASE%\data，重新启动执行 win.bat start"
+echo !MSG!
+pause
+exit /b 0

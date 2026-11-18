@@ -15,7 +15,7 @@ docker + nginx + mysql + mongodb + php 集成开发环境。
 
 `install.sh` 会自己判断操作系统，不需要再按系统挑脚本。
 
-脚本按「入口 + 分系统」组织：`install.sh` 是入口，负责识别系统、共用函数和部署四个容器；准备 Docker 的逻辑拆在 `os/linux.sh`（自动安装引擎）与 `os/macos.sh`（只检查、不安装），运行时由入口 `source` 加载，不能单独执行。发行版分派集中在 `os/linux.sh`，以后新增发行版只改这一个文件。本地 HTTPS 证书由独立的 `ssl.sh` 生成（可单独重跑），nginx 监听 443 并把 80 跳转到 443。
+脚本按「入口 + 分系统」组织：`install.sh` 是入口，负责识别系统、共用函数和部署容器；准备 Docker 的逻辑拆在 `os/linux.sh`（自动安装引擎）与 `os/macos.sh`（只检查、不安装），运行时由入口 `source` 加载，不能单独执行。发行版分派集中在 `os/linux.sh`，以后新增发行版只改这一个文件。本地 HTTPS 证书由独立的 `ssl.sh` 生成（可单独重跑），nginx 监听 443 并把 80 跳转到 443。日常启停用 `start.sh` / `stop.sh`（Windows：`win.bat start` / `win.bat stop`），只操作已安装的容器。
 
 ## install.sh 做了什么
 
@@ -25,12 +25,13 @@ docker + nginx + mysql + mongodb + php 集成开发环境。
    - Linux 未装 → 用发行版包管理器安装 **Docker 引擎（只有容器运行时，不安装 Docker Desktop 桌面版）**，首次安装且没有 `/etc/docker/daemon.json` 时写入镜像加速配置，然后启动服务并设为开机自启；
    - Linux 非 root 执行 → 自动用 `sudo` 重新执行；
    - macOS → 只检查 Docker 是否已安装并运行，未运行则提示先启动，不做任何安装。
-3. 创建 `code/`、`www/`、`log/*`、`data/*` 目录并放开写权限。
-4. 拉取 `nginx`、`mysql`、`mongo`、`xqkeji/xqkeji` 四个镜像（失败自动重试一次）。
-5. 创建 `xqkeji-net` 网络（`172.0.0.0/24`）。
-6. 用 `ssl.sh` 生成本地 HTTPS 证书（mkcert 本地 CA 优先，拉不到 mkcert 时退回 openssl 自签），覆盖 `localhost`、`127.0.0.1`、`*.xqkeji.dev` 等。
-7. 启动四个容器，全部 `--restart=always`；nginx 监听 443（https），并把 80 自动跳转到 443。
-8. 访问 `https://127.0.0.1/` 校验站点是否真的可用，最后打印容器状态与连接信息。
+3. 询问是否安装 MySQL 容器（**默认安装**）：交互终端里提示 `是否安装 MySQL 容器？[Y/n]`，直接回车或 `y` 安装、`n` 跳过；非交互环境默认安装；也可用 `--with-mysql` / `--without-mysql` 免交互指定。
+4. 创建 `code/`、`www/`、`log/*`、`data/*` 目录并放开写权限（MySQL 的 `log/mysql`、`data/mysql` 仅在安装 MySQL 时创建）。
+5. 按选择拉取 `nginx`、`mysql`、`mongo`、`xqkeji/xqkeji` 镜像（失败自动重试一次；不装 MySQL 时只拉三个）。
+6. 创建 `xqkeji-net` 网络（`172.0.0.0/24`）。
+7. 用 `ssl.sh` 生成本地 HTTPS 证书（mkcert 本地 CA 优先，拉不到 mkcert 时退回 openssl 自签），覆盖 `localhost`、`127.0.0.1`、`*.xqkeji.dev` 等。
+8. 启动容器（装 MySQL 时四个，否则三个），全部 `--restart=always`；nginx 监听 443（https），并把 80 自动跳转到 443。已存在的容器删除重建，本次不装 MySQL 时旧的 mysql 容器一并移除，`data/` 数据保留。
+9. 访问 `https://127.0.0.1/` 校验站点是否真的可用，最后打印容器状态与连接信息。
 
 ## 支持的 Linux 发行版
 
@@ -64,7 +65,9 @@ chmod +x install.sh
 
 普通用户执行即可，安装 Docker 需要 root 权限时脚本会自动 `sudo`。没有 `sudo` 的机器请用 root 执行 `bash install.sh`。
 
-执行完成后会自动拉取镜像并启动 nginx、mysql、mongo、xqkeji（php-fpm）四个容器。Docker 服务已设为开机自启，容器为 `--restart=always`，重启机器后环境自动恢复。
+执行过程中会询问是否安装 MySQL 容器（默认安装，直接回车即可）；不需要时输入 `n`，或免交互执行 `./install.sh --without-mysql`（想明确装回来用 `--with-mysql`）。
+
+执行完成后会自动拉取镜像并启动所选容器（默认 nginx、mysql、mongo、xqkeji（php-fpm）四个；跳过 MySQL 时三个）。Docker 服务已设为开机自启，容器为 `--restart=always`，重启机器后环境自动恢复。
 
 ## 2. Windows + WSL2 安装
 
@@ -151,7 +154,7 @@ macOS 上需要注意：
 
 - **文件共享**：dnmmp 目录必须在 Docker Desktop 的 Settings → Resources → File Sharing 列表里（默认已共享 `/Users`、`/Volumes`、`/tmp`、`/private`）。放在其它位置时容器会挂载失败。
 - **Apple Silicon（M 系列芯片）**：`xqkeji/xqkeji` 镜像是 `linux/amd64`，需要 Docker Desktop 开启 Settings → General →「Use Rosetta for x86/amd64 emulation」才能运行。是否有 arm64 版本可以用这条命令确认：`docker manifest inspect xqkeji/xqkeji`。
-- macOS 上 `--net=host` 指的是 Docker 虚拟机而不是 Mac 本机，所以四个容器统一走 `xqkeji-net` 桥接网络 + 端口发布，访问地址一律是 `127.0.0.1`。
+- macOS 上 `--net=host` 指的是 Docker 虚拟机而不是 Mac 本机，所以各容器统一走 `xqkeji-net` 桥接网络 + 端口发布，访问地址一律是 `127.0.0.1`。
 
 ## 4. Windows 安装
 
@@ -159,7 +162,7 @@ macOS 上需要注意：
 
 然后进入 dnmmp 目录，双击或在命令行执行 `win.bat`。
 
-`win.bat` 是 `install.sh` 的 Windows 原生批处理版（`install.sh` 不在 Windows Git Bash 里运行），用已装好的 Docker Desktop 完成等价部署：检查 Docker → 建目录 → 拉取四个镜像（失败重试一次）→ 删除重建已存在的容器（`data/` 数据保留）→ 确保 `xqkeji-net`（`172.0.0.0/24`）→ 生成本地 HTTPS 证书 → 启动 nginx/mysql/mongo/xqkeji 四个容器（nginx 监听 443 https、80 跳转 443，全部 `--restart=always`）→ 校验 `https://127.0.0.1/` → 打印状态与连接信息。可重复执行。
+`win.bat` 是 `install.sh` 的 Windows 原生批处理版（`install.sh` 不在 Windows Git Bash 里运行），用已装好的 Docker Desktop 完成等价部署：检查 Docker → 询问是否安装 MySQL（默认安装，回车确认；`win.bat no-mysql` 免交互跳过，可与 `force` 组合）→ 建目录 → 按选择拉取镜像（失败重试一次）→ 删除重建已存在的容器（`data/` 数据保留，不装 MySQL 时旧 mysql 容器一并移除）→ 确保 `xqkeji-net`（`172.0.0.0/24`）→ 生成本地 HTTPS 证书 → 启动所选容器（装 MySQL 时 nginx/mysql/mongo/xqkeji 四个，否则三个；nginx 监听 443 https、80 跳转 443，全部 `--restart=always`）→ 校验 `https://127.0.0.1/` → 打印状态与连接信息。可重复执行。日常启停：`win.bat start` / `win.bat stop`。
 
 证书优先下载 `mkcert.exe` 到 `bin/`（受信任，绿锁），拉不到时退回宿主 `openssl` 自签（浏览器提示不受信任，测试无碍），覆盖域名与 `ssl.sh` 一致；已有证书默认不重签，强制重签：`win.bat force`（或 `set FORCE=1` 后重跑 `win.bat`）。`bin/` 与 `etc/nginx/ssl/` 已在 `.gitignore` 里，私钥不进 git。
 
@@ -167,7 +170,7 @@ dnmmp 目录需在 Docker Desktop 的共享盘里（WSL2 后端默认共享所�
 
 ## 服务、端口与目录
 
-四个容器都接在 `xqkeji-net`（`172.0.0.0/24`）上，宿主机统一通过 `127.0.0.1` 访问：
+各容器都接在 `xqkeji-net`（`172.0.0.0/24`）上，宿主机统一通过 `127.0.0.1` 访问：
 
 | 服务 | 容器名 | 宿主机端口 | 容器内 IP | 账号 |
 | --- | --- | --- | --- | --- |
@@ -175,6 +178,8 @@ dnmmp 目录需在 Docker Desktop 的共享盘里（WSL2 后端默认共享所�
 | MySQL | mysql | 3306 | 172.0.0.200 | root / xqkeji.cn |
 | MongoDB | mongo | 27017 | 172.0.0.100 | root / xqkeji.cn |
 | PHP-FPM | xqkeji | 9000 | 172.0.0.10 | — |
+
+MySQL 是可选组件：安装时确认跳过就没有 mysql 容器，其余服务不受影响；`data/mysql` 里的旧数据始终保留。
 
 nginx 通过 `fastcgi_pass 172.0.0.10:9000` 把 PHP 请求转给 xqkeji 容器（见 `etc/nginx/conf.d/default.conf`）。
 
@@ -250,11 +255,23 @@ fast-admin 用 `composer create-project` 建项目时会自动向上找到并执
 
 ## 重复执行、停止与启动
 
-`install.sh` 可以重复执行：已存在的四个容器会被删除重建，网络存在且网段一致时直接复用，**`data/` 里的数据库数据不会丢**。
+`install.sh`（Windows：`win.bat`）可以重复执行：已存在的容器会被删除重建，网络存在且网段一致时直接复用，**`data/` 里的数据库数据不会丢**。重复执行时会再次询问是否安装 MySQL；本次选择不装时，旧的 mysql 容器会被移除（数据保留在 `data/mysql`），之后想装回来再跑一次并确认安装即可。
+
+日常启停用专门的脚本，只操作已安装的容器（没装 MySQL 就自动跳过，不必记容器名）：
 
 ```bash
-docker stop nginx mysql mongo xqkeji     # 停止
-docker start nginx mysql mongo xqkeji    # 启动
+./start.sh     # 启动（网络不存在时自动创建）
+./stop.sh      # 停止（数据保留在 data/）
+```
+
+```bat
+win.bat start
+win.bat stop
+```
+
+容器为 `--restart=always`，Docker 启动后会自动运行；手动停止后用 `start` 恢复。排查时仍可直接用 docker 命令：
+
+```bash
 docker ps --filter network=xqkeji-net    # 查看状态
 docker logs nginx                        # 查看日志
 ```

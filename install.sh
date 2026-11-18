@@ -22,8 +22,11 @@ IP_PHP=172.0.0.10
 IP_MONGO=172.0.0.100
 IP_MYSQL=172.0.0.200
 REGISTRY_MIRROR=https://docker.m.daocloud.io
+ALL_CONTAINERS=(nginx mysql mongo xqkeji)
 IMAGES=(nginx mysql mongo xqkeji/xqkeji)
 CONTAINERS=(nginx mysql mongo xqkeji)
+WITH_MYSQL=1
+MYSQL_FLAG=0
 
 BASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SELF="$BASE_DIR/$(basename -- "${BASH_SOURCE[0]}")"
@@ -88,19 +91,77 @@ docker_ready() {
 }
 
 ####################################
-# 部署四个容器
+# MySQL 可选：默认安装，交互确认或非交互标志跳过
+####################################
+parse_args() {
+    local a
+    for a in "$@"; do
+        case "$a" in
+            --with-mysql) WITH_MYSQL=1; MYSQL_FLAG=1 ;;
+            --without-mysql) WITH_MYSQL=0; MYSQL_FLAG=1 ;;
+            *) die "未知参数：$a（可用：--with-mysql / --without-mysql）" ;;
+        esac
+    done
+}
+
+ask_mysql() {
+    if [ "$MYSQL_FLAG" = 1 ]; then
+        if [ "$WITH_MYSQL" = 1 ]; then
+            info "按参数安装 MySQL 容器"
+        else
+            info "按参数跳过 MySQL 容器（data/mysql 旧数据保留）"
+        fi
+        return 0
+    fi
+
+    if [ ! -t 0 ]; then
+        info "非交互环境，默认安装 MySQL（--without-mysql 可跳过）"
+        return 0
+    fi
+
+    local ans
+    while true; do
+        read -r -p '是否安装 MySQL 容器？[Y/n]（默认安装）: ' ans
+        case "$ans" in
+            '' | y | Y) WITH_MYSQL=1; return 0 ;;
+            n | N) WITH_MYSQL=0; info "跳过 MySQL 容器（data/mysql 旧数据保留）"; return 0 ;;
+            *) warn "请输入 y 或 n（直接回车默认安装）" ;;
+        esac
+    done
+}
+
+apply_mysql_choice() {
+    if [ "$WITH_MYSQL" = 1 ]; then
+        IMAGES=(nginx mysql mongo xqkeji/xqkeji)
+        CONTAINERS=(nginx mysql mongo xqkeji)
+    else
+        IMAGES=(nginx mongo xqkeji/xqkeji)
+        CONTAINERS=(nginx mongo xqkeji)
+    fi
+}
+
+####################################
+# 部署容器（MySQL 按选择取舍）
 ####################################
 prepare_dirs() {
     local d f
-    for d in code www log/nginx log/mysql log/mongo log/php data/mysql data/mongo; do
+    for d in code www log/nginx log/mongo log/php data/mongo; do
         mkdir -p "$BASE_DIR/$d"
     done
+    if [ "$WITH_MYSQL" = 1 ]; then
+        for d in log/mysql data/mysql; do
+            mkdir -p "$BASE_DIR/$d"
+        done
+    fi
     chmod -R a+w "$BASE_DIR/log" "$BASE_DIR/data"
-    for f in etc/nginx/nginx.conf etc/nginx/conf.d etc/php/php.ini etc/mongo/mongodb.conf etc/mysql; do
+    for f in etc/nginx/nginx.conf etc/nginx/conf.d etc/php/php.ini etc/mongo/mongodb.conf; do
         if [ ! -e "$BASE_DIR/$f" ]; then
             die "缺少 $f，请在完整的 dnmmp 目录内运行本脚本"
         fi
     done
+    if [ "$WITH_MYSQL" = 1 ] && [ ! -e "$BASE_DIR/etc/mysql" ]; then
+        die "缺少 etc/mysql，请在完整的 dnmmp 目录内运行本脚本"
+    fi
 }
 
 pull_images() {
@@ -118,9 +179,14 @@ pull_images() {
 
 remove_old_containers() {
     local c
-    for c in "${CONTAINERS[@]}"; do
+    # 遍历全部四种容器：本次选择不装 MySQL 时，旧的 mysql 容器也一并移除（数据保留）。
+    for c in "${ALL_CONTAINERS[@]}"; do
         if docker container inspect "$c" >/dev/null 2>&1; then
-            info "重新创建已存在的容器 $c（数据库数据保留在 data/ 目录）"
+            if [ "$c" = mysql ] && [ "$WITH_MYSQL" = 0 ]; then
+                info "按选择移除已存在的 mysql 容器（数据保留在 data/mysql）"
+            else
+                info "重新创建已存在的容器 $c（数据库数据保留在 data/ 目录）"
+            fi
             docker rm -f "$c" >/dev/null
         fi
     done
@@ -152,14 +218,16 @@ run_containers() {
         -v "$BASE_DIR/etc/nginx/ssl:/etc/nginx/ssl:ro" \
         nginx >/dev/null
 
-    info "启动 mysql 容器"
-    docker run -d --name mysql --restart=always \
-        --network "$NET_NAME" --ip "$IP_MYSQL" -p 3306:3306 \
-        -v "$BASE_DIR/etc/mysql:/etc/mysql/conf.d" \
-        -v "$BASE_DIR/log/mysql:/logs" \
-        -v "$BASE_DIR/data/mysql:/var/lib/mysql" \
-        -e MYSQL_ROOT_PASSWORD='xqkeji.cn' \
-        mysql >/dev/null
+    if [ "$WITH_MYSQL" = 1 ]; then
+        info "启动 mysql 容器"
+        docker run -d --name mysql --restart=always \
+            --network "$NET_NAME" --ip "$IP_MYSQL" -p 3306:3306 \
+            -v "$BASE_DIR/etc/mysql:/etc/mysql/conf.d" \
+            -v "$BASE_DIR/log/mysql:/logs" \
+            -v "$BASE_DIR/data/mysql:/var/lib/mysql" \
+            -e MYSQL_ROOT_PASSWORD='xqkeji.cn' \
+            mysql >/dev/null
+    fi
 
     info "启动 mongo 容器"
     docker run -d --name mongo --restart=always \
@@ -204,18 +272,25 @@ summary() {
 站点目录：$BASE_DIR/www/default
 访问地址：https://127.0.0.1/（http://127.0.0.1/ 自动跳转 https）
 新增站点：./bin/add-site.sh <name> [project-dir]（nginx 配置 + hosts + 重载，例 ./bin/add-site.sh crm）
-MySQL   ：127.0.0.1:3306   root / xqkeji.cn
+EOF
+    if [ "$WITH_MYSQL" = 1 ]; then
+        echo 'MySQL   ：127.0.0.1:3306   root / xqkeji.cn'
+    else
+        echo 'MySQL   ：本次未安装（data/mysql 旧数据保留；重装执行 ./install.sh --with-mysql）'
+    fi
+    cat <<EOF
 MongoDB ：127.0.0.1:27017  root / xqkeji.cn
 PHP-FPM ：127.0.0.1:9000   容器内 $IP_PHP:9000
 数据目录：$BASE_DIR/data
 日志目录：$BASE_DIR/log
 
 容器已设置 --restart=always，Docker 启动后会自动运行。
-常用命令：docker stop ${CONTAINERS[*]} / docker start ${CONTAINERS[*]}
+常用命令：./start.sh 启动 / ./stop.sh 停止（Windows：win.bat start / win.bat stop）
 EOF
 }
 
 main() {
+    parse_args "$@"
     detect_platform
     local os_script="$BASE_DIR/os/$OS_KIND.sh"
     [ -r "$os_script" ] || die "缺少 os/$OS_KIND.sh，请在完整的 dnmmp 目录内运行本脚本"
@@ -226,6 +301,8 @@ main() {
         info "包管理器：$PKG"
     fi
     info "Docker 版本：$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)"
+    ask_mysql
+    apply_mysql_choice
     prepare_dirs
     pull_images
     remove_old_containers
