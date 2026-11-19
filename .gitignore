@@ -1,6 +1,10 @@
 # 本地生成的 HTTPS 证书与私钥（切勿提交）
 etc/nginx/ssl/
 
+# 运行时生成的 ACME 模块加载片段与证书状态（add-site.sh / win.bat site 生成）
+etc/nginx/modules-enabled/
+data/nginx/
+
 # 自动下载的 mkcert 二进制（bin/add-site.sh 是仓库自带的脚本，要入库；
 # 写成 bin/* 而不是 bin/，否则 git 不会进入该目录，下面的例外无效）
 bin/*

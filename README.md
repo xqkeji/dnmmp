@@ -210,7 +210,7 @@ FORCE=1 ./ssl.sh
 
 几点说明：
 
-- `*.xqkeji.dev` 是**本地测试占位域名**，不是公网解析。要用它访问，需在宿主机 hosts 里把具体子域指到本机，例如 `127.0.0.1 app.xqkeji.dev`，然后访问 `https://app.xqkeji.dev/`；这一步连同 nginx 配置可以用 `./bin/add-site.sh app` 自动完成，见「新增本地站点」。通配符只匹配一级（`a.b.xqkeji.dev` 不匹配）。
+- `*.xqkeji.dev` 是**本地测试占位域名**，不是公网解析。要用它访问，需在宿主机 hosts 里把具体子域指到本机，例如 `127.0.0.1 app.xqkeji.dev`，然后访问 `https://app.xqkeji.dev/`；这一步连同 nginx 配置可以用 `./bin/add-site.sh app` 自动完成，见「新增站点」。通配符只匹配一级（`a.b.xqkeji.dev` 不匹配）。
 - **WSL2**：`ssl.sh` 在 WSL 里运行，mkcert 装的是 **WSL 内**的信任库；Windows 上的浏览器用的是 Windows 证书库，二者不相通。要让 Windows 浏览器也绿锁，用 `mkcert -CAROOT` 找到 `rootCA.pem`（在 `\\wsl$\<发行版>\home\<用户>\.local\share\mkcert\`），把它导入 Windows 的「受信任的根证书颁发机构」。
 - **Firefox** 读 NSS 信任库，Linux 上需装 `libnss3-tools`（提供 `certutil`）mkcert 才能装入；缺失时 mkcert 会提示，系统信任仍可能生效。
 
@@ -227,9 +227,9 @@ FORCE=1 ./ssl.sh
 
 `default.conf` 的 80/443 已显式设为 `default_server`，所以 `localhost`、`127.0.0.1` 及任何未匹配域名仍走默认站，只有 `crm.xqkeji.dev` 命中 CRM——避免 `crm.conf` 按字母序排在前面时抢走默认站。新增其它站点同理：写自己的 `server_name`，不要动 `default_server`。
 
-## 新增本地站点
+## 新增站点（本地 / 公网域名）
 
-`bin/add-site.sh`（Linux / macOS）与 `win.bat site`（Windows）一条命令登记一个本地站点，不必重跑 `install.sh`：
+`bin/add-site.sh`（Linux / macOS）与 `win.bat site`（Windows）一条命令登记一个站点，不必重跑 `install.sh`：
 
 ```bash
 ./bin/add-site.sh crm                                  # 项目目录默认 www/crm
@@ -241,13 +241,34 @@ win.bat site crm
 win.bat site crm "D:\dnmmp\www\default\crm"
 ```
 
-做三件事：
+命令会**交互询问站点域名**（两平台行为一致）：
 
-1. 生成 `etc/nginx/conf.d/<name>.conf`：443 ssl（证书用 `etc/nginx/ssl/local.pem`）、`server_name <name>.xqkeji.dev`、`error_log /home/log/<name>.log`、PHP 转发 `172.0.0.10:9000`，并带上 `asset/`、`upload/` 目录禁止执行 PHP 的规则。root 写的是容器内路径：宿主机 `www/` 就是容器 `/home/www/`，所以**项目必须放在 `www/` 下**，脚本自己换算，放在外面直接报错。站点入口目录是 `<项目目录>/www`，不存在就报错，不写任何配置。
-2. 宿主机 hosts 追加 `127.0.0.1 <name>.xqkeji.dev`。Linux / macOS 没有写权限时走 `sudo`；Windows 先直接写，被拒绝就弹一次 UAC 提权重试。
+- **回车用默认 `<name>.xqkeji.dev`** → 本地站点：mkcert 本地证书 + hosts 解析，行为与旧版完全一致。
+- **输入其它域名（如 `crm.example.com`）** → 公网站点：nginx ACME 模块自动签发并续期 Let's Encrypt 证书，不写 hosts。
+- 非交互环境（管道、钩子）不提问，直接用默认本地域名；环境变量 `ADD_SITE_DOMAIN=<域名>` 可显式指定（供脚本化使用）。
+
+本地路径做三件事（与旧版一致）：
+
+1. 生成 `etc/nginx/conf.d/<name>.conf`：443 ssl（证书用 `etc/nginx/ssl/local.pem`）、`server_name <域名>`、`error_log /home/log/<name>.log`、PHP 转发 `172.0.0.10:9000`，并带上 `asset/`、`upload/` 目录禁止执行 PHP 的规则。root 写的是容器内路径：宿主机 `www/` 就是容器 `/home/www/`，所以**项目必须放在 `www/` 下**，脚本自己换算，放在外面直接报错。站点入口目录是 `<项目目录>/www`，不存在就报错，不写任何配置。
+2. 宿主机 hosts 追加 `127.0.0.1 <域名>`。Linux / macOS 没有写权限时走 `sudo`；Windows 先直接写，被拒绝就弹一次 UAC 提权重试。
 3. `docker exec nginx nginx -t` 通过后 `docker exec nginx nginx -s reload`。nginx 容器没在跑就跳过重载，下次启动自然用新配置。
 
-**幂等**：`<name>.conf` 已存在、或 `<name>.xqkeji.dev` 已被 `conf.d` 里其它配置使用，就跳过生成；hosts 里已有该域名（大小写不同、与其它域名写在同一行都算已有）就跳过追加。重复执行不会覆盖手工改过的配置。`nginx -t` 不通过时会删掉刚生成的配置再报错，原有站点不受影响；还没签证书时只提示先跑 `ssl.sh`。
+公网域名（ACME）路径额外做：
+
+1. 首次使用生成两份共享配置（已存在就不覆盖）：`etc/nginx/modules-enabled/acme.conf`（`load_module` 加载 ACME 模块；`nginx.conf` 顶层用通配 `include modules-enabled/*.conf;` 引入，没有匹配文件时是合法空操作，纯本地环境不受影响）和 `etc/nginx/conf.d/acme-issuer.conf`（Let's Encrypt issuer + Docker 内置 DNS `resolver 127.0.0.11`）。
+2. 站点 conf 的证书改用 `acme_certificate letsencrypt` + `$acme_certificate` 变量，重载后模块自动签发，到期前**自动续期**，不需要 cron 或 acme.sh。
+3. 账户密钥与已签证书存在 `data/nginx/acme/`（挂载到容器 `/var/cache/nginx/acme`），容器重建不丢状态，避免撞 Let's Encrypt 速率限制。
+4. 不写 hosts；重载后签发是异步的（首次需几秒到几十秒），进度与失败原因看 `docker logs nginx`。
+
+**公网域名的前提**（脚本管不了，使用前自行确认）：
+
+- 域名 DNS A 记录已指向本机公网 IP；
+- 80 端口公网可达（HTTP-01 验证走 80；`default.conf` 已把 `/.well-known/acme-challenge/` 路径豁免出 80→443 跳转）；
+- nginx 镜像带 ACME 模块：官方**非 slim** 镜像自 `1.29.4` / `1.28.1`（2026-01）起自带，默认 `nginx:latest` 满足；用 `--tag nginx=1.27` 等锁了旧版的需换 tag 重新部署；
+- 容器按新版 `install.sh` / `win.bat` 部署过（才有 ACME 的两个挂载）。旧部署直接加公网站点会被脚本拦下并提示先重新部署；
+- ACME 模块不支持 DNS-01，**签不了泛域名证书**，每个站点各签一张。
+
+**幂等**：`<name>.conf` 已存在、或该域名已被 `conf.d` 里其它配置使用，就跳过生成；hosts 里已有该域名（大小写不同、与其它域名写在同一行都算已有）就跳过追加。重复执行不会覆盖手工改过的配置。`nginx -t` 不通过时会删掉刚生成的配置（含本次新建的 ACME 共享配置）再报错，原有站点不受影响；本地路径还没签证书时只提示先跑 `ssl.sh`。
 
 新站点只写自己的 `server_name`，不碰 `default.conf` 的 `default_server`。
 
@@ -290,7 +311,7 @@ win.bat upgrade     :: Windows
 
 流程：读本地 `VERSION` → 经 GitHub API 查最新 tag → 版本相同则提示「已是最新」退出 → 下载并解压该 tag 的源码 zip → 校验文件齐全 → 旧文件备份到 `.upgrade-backup/<旧版本>-<时间戳>/` → 按白名单覆盖 → 询问是否立即重新部署 `[Y/n]`（默认是；非交互环境跳过并提示手动执行）。覆盖中途失败会**自动回滚**到升级前的文件；重新部署失败不回滚（升级本身已成功，按安装脚本的报错处理即可）。
 
-**只覆盖程序文件**：`install.sh`、`win.bat`、`ssl.sh`、`start.sh`、`stop.sh`、`upgrade.sh`、`os/`、`bin/add-site.sh`、`bin/upgrade.ps1`、`README.md`、`LICENSE`、`VERSION`、`.gitignore`、`.gitattributes`，以及基础配置 `etc/nginx/nginx.conf`、`etc/nginx/conf.d/default.conf`、`etc/php/php.ini`、`etc/php/conf.d/*.ini`、`etc/mysql/my.ini`、`etc/mongo/mongodb.conf`。**绝不触碰**：`data/`、`www/`、`code/`、`log/`、`etc/nginx/ssl/`、`bin/mkcert*`、`conf.d` 里的自定义站点配置（如 `crm.conf`）、hosts。
+**只覆盖程序文件**：`install.sh`、`win.bat`、`ssl.sh`、`start.sh`、`stop.sh`、`upgrade.sh`、`os/`、`bin/add-site.sh`、`bin/upgrade.ps1`、`README.md`、`LICENSE`、`VERSION`、`.gitignore`、`.gitattributes`，以及基础配置 `etc/nginx/nginx.conf`、`etc/nginx/conf.d/default.conf`、`etc/php/php.ini`、`etc/php/conf.d/*.ini`、`etc/mysql/my.ini`、`etc/mongo/mongodb.conf`。**绝不触碰**：`data/`、`www/`、`code/`、`log/`、`etc/nginx/ssl/`、`etc/nginx/modules-enabled/`、`bin/mkcert*`、`conf.d` 里的自定义站点配置（如 `crm.conf`、`acme-issuer.conf`）、hosts。
 
 可选参数（两平台等价）：
 

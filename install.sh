@@ -176,7 +176,7 @@ apply_mysql_choice() {
 ####################################
 prepare_dirs() {
     local d f
-    for d in code www log/nginx log/mongo log/php data/mongo; do
+    for d in code www log/nginx log/mongo log/php data/mongo etc/nginx/modules-enabled data/nginx/acme; do
         mkdir -p "$BASE_DIR/$d"
     done
     if [ "$WITH_MYSQL" = 1 ]; then
@@ -282,7 +282,9 @@ run_containers() {
         -v "$BASE_DIR/log/nginx:/home/log" \
         -v "$BASE_DIR/etc/nginx/nginx.conf:/etc/nginx/nginx.conf" \
         -v "$BASE_DIR/etc/nginx/conf.d:/etc/nginx/conf.d" \
+        -v "$BASE_DIR/etc/nginx/modules-enabled:/etc/nginx/modules-enabled" \
         -v "$BASE_DIR/etc/nginx/ssl:/etc/nginx/ssl:ro" \
+        -v "$BASE_DIR/data/nginx/acme:/var/cache/nginx/acme" \
         "$(image_ref nginx)" >/dev/null
 
     if [ "$WITH_MYSQL" = 1 ]; then
@@ -338,7 +340,7 @@ summary() {
 
 站点目录：$BASE_DIR/www/default
 访问地址：https://127.0.0.1/（http://127.0.0.1/ 自动跳转 https）
-新增站点：./bin/add-site.sh <name> [project-dir]（nginx 配置 + hosts + 重载，例 ./bin/add-site.sh crm）
+新增站点：./bin/add-site.sh <name> [project-dir]（交互选域名：默认 <name>.xqkeji.dev 走本地证书+hosts；其它域名走 ACME 自动签发，例 ./bin/add-site.sh crm）
 EOF
     if [ "$WITH_MYSQL" = 1 ]; then
         echo 'MySQL   ：127.0.0.1:3306   root / xqkeji.cn'

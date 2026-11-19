@@ -19,7 +19,10 @@ REM Back up data\ before recreate: win.bat backup-data  (opt-in, can be slow).
 REM Start/stop installed containers: win.bat start / win.bat stop.
 REM Self-upgrade from the latest GitHub tag: win.bat upgrade
 REM   (force / backup-data / --local <zip> supported; see bin\upgrade.ps1).
-REM Register one local site: win.bat site <name> [project-dir]  (vhost + hosts + reload).
+REM Register one site: win.bat site <name> [project-dir]  (vhost + reload).
+REM   Interactive domain: default <name>.xqkeji.dev = mkcert cert + hosts entry;
+REM   any other domain = ACME auto-issued Let's Encrypt cert (no hosts entry).
+REM   ADD_SITE_DOMAIN=<fqdn> overrides the prompt (scripts / hooks).
 REM
 REM NOTE: cmd.exe mis-parses unquoted UTF-8 Chinese on echo/REM lines under chcp 65001,
 REM so every Chinese message is stored via set "MSG=..." and printed with echo !MSG!
@@ -227,7 +230,7 @@ exit /b 0
 
 REM ===================== prepare dirs and required config =====================
 :prepare_dirs
-for %%d in (code www log\nginx log\mongo log\php data\mongo etc\nginx\ssl) do (
+for %%d in (code www log\nginx log\mongo log\php data\mongo etc\nginx\ssl etc\nginx\modules-enabled data\nginx\acme) do (
   if not exist "%BASE%\%%d" md "%BASE%\%%d"
 )
 if "%WITH_MYSQL%"=="1" for %%d in (log\mysql data\mysql) do (
@@ -531,7 +534,9 @@ docker run -d --name nginx --restart=always ^
   -v "%BASE%\log\nginx:/home/log" ^
   -v "%BASE%\etc\nginx\nginx.conf:/etc/nginx/nginx.conf" ^
   -v "%BASE%\etc\nginx\conf.d:/etc/nginx/conf.d" ^
+  -v "%BASE%\etc\nginx\modules-enabled:/etc/nginx/modules-enabled" ^
   -v "%BASE%\etc\nginx\ssl:/etc/nginx/ssl:ro" ^
+  -v "%BASE%\data\nginx\acme:/var/cache/nginx/acme" ^
   !REF! >nul
 if errorlevel 1 (
   set "MSG=[错误] 启动 nginx 容器失败（常见原因：80/443 被占用，或 dnmmp 目录不在 Docker Desktop 共享盘）"
@@ -656,8 +661,11 @@ REM ===================== add-site: register one local site ====================
 REM win.bat site <name> [project-dir]
 REM
 REM The Windows counterpart of bin/add-site.sh: writes etc\nginx\conf.d\<name>.conf,
-REM adds 127.0.0.1 <name>.xqkeji.dev to hosts, then reloads nginx in its
-REM container. Does NOT redeploy anything, so it is safe to run on a live env.
+REM then reloads nginx in its container. The domain is asked interactively: the
+REM default <name>.xqkeji.dev keeps the local path (mkcert cert + 127.0.0.1 hosts
+REM entry); any other domain switches to ACME (Let's Encrypt) auto-issuance via
+REM the nginx acme module and skips hosts. Does NOT redeploy anything, so it is
+REM safe to run on a live env.
 REM
 REM Idempotent: an existing <name>.conf is never overwritten, a domain already
 REM claimed by another vhost is not claimed twice, and a hosts entry that already
@@ -698,7 +706,6 @@ REM text and cannot inject anything.
 set "AS_NAME=%NAME%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "if($env:AS_NAME -match '^[A-Za-z0-9][A-Za-z0-9-]*$'){exit 0}else{exit 1}"
 if errorlevel 1 goto :site_bad_name
-set "DOMAIN=%NAME%.xqkeji.dev"
 if defined PROJ_ARG (
   for %%i in ("%PROJ_ARG%") do set "PROJ=%%~fi"
 ) else (
@@ -718,20 +725,68 @@ set "CONF=%BASE%\etc\nginx\conf.d\%NAME%.conf"
 set "HOSTS_FILE=%SystemRoot%\System32\drivers\etc\hosts"
 REM Override for tests / non-standard Windows directories.
 if defined ADD_SITE_HOSTS set "HOSTS_FILE=%ADD_SITE_HOSTS%"
+REM Interactive domain choice (parity with bin/add-site.sh): Enter keeps the
+REM default <name>.xqkeji.dev local path (mkcert + hosts); any other domain
+REM switches to ACME auto-issuance. ADD_SITE_DOMAIN overrides without asking.
+REM set /p with redirected stdin returns at once leaving DOMAIN unset, which
+REM falls back to the default -- the equivalent of the sh [ -t 0 ] guard.
+REM The prompt text goes through MSG (Chinese on a command line mis-parses
+REM under chcp 65001); the set /p prompt itself stays ASCII.
+if defined ADD_SITE_DOMAIN (
+  set "DOMAIN=!ADD_SITE_DOMAIN!"
+) else (
+  set "MSG=站点域名 [默认 %NAME%.xqkeji.dev]（回车用默认；其它域名将用 ACME 自动签发证书）："
+  echo !MSG!
+  set "DOMAIN="
+  set /p "DOMAIN=> "
+  if not defined DOMAIN set "DOMAIN=%NAME%.xqkeji.dev"
+)
+REM Validate + lowercase + strip whitespace via PowerShell (env-var handover,
+REM no interpolation into the command text). Invalid input produces no output,
+REM leaving DOMAIN unset.
+set "AS_DOMAIN_IN=!DOMAIN!"
+set "DOMAIN="
+for /f "delims=" %%d in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=($env:AS_DOMAIN_IN -replace '\s',''); if($d -match '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'){ $d.ToLower() }"') do set "DOMAIN=%%d"
+if not defined DOMAIN goto :site_bad_domain
+REM mkcert covers *.xqkeji.dev and the apex xqkeji.dev itself -> local path.
+set "AS_DOMAIN=!DOMAIN!"
+set "LOCAL_MODE="
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if($env:AS_DOMAIN -eq 'xqkeji.dev' -or $env:AS_DOMAIN.EndsWith('.xqkeji.dev')){exit 0}else{exit 1}"
+if not errorlevel 1 set "LOCAL_MODE=1"
 echo ==============================================================
-set "MSG= 添加本地站点：%DOMAIN%"
+if defined LOCAL_MODE (
+  set "MSG= 添加本地站点：%DOMAIN%"
+) else (
+  set "MSG= 添加公网域名站点：%DOMAIN%（ACME 自动签发证书）"
+)
 echo !MSG!
 echo ==============================================================
 call :site_check_existing
 if defined SKIP_CONF goto :site_hosts
-call :site_write_conf
+if defined LOCAL_MODE (
+  call :site_write_conf
+) else (
+  call :site_acme_mounts
+  if errorlevel 1 goto :site_fail
+  call :site_acme_base
+  call :site_write_conf
+)
 call :site_reload
 if errorlevel 1 goto :site_fail
 REM ---- keep the lines above this label 100% ASCII (see :add_site).
 REM ----
 REM ----
 :site_hosts
+if not defined LOCAL_MODE goto :site_dns_note
 call :site_add_hosts
+call :site_report
+exit /b 0
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:site_dns_note
+set "MSG=[提示] 公网域名不写 hosts：请确保 %DOMAIN% 的 DNS A 记录已指向本机公网 IP，且 80 端口公网可达"
+echo !MSG!
 call :site_report
 exit /b 0
 
@@ -772,8 +827,15 @@ if exist "%CONF%" del "%CONF%" >nul 2>&1
 >> "%CONF%" echo 	server_name  %DOMAIN%;
 >> "%CONF%" echo 	error_log  /home/log/%NAME%.log;
 >> "%CONF%" echo.
+if defined LOCAL_MODE (
 >> "%CONF%" echo 	ssl_certificate     /etc/nginx/ssl/local.pem;
 >> "%CONF%" echo 	ssl_certificate_key /etc/nginx/ssl/local-key.pem;
+) else (
+>> "%CONF%" echo 	acme_certificate letsencrypt;
+>> "%CONF%" echo 	ssl_certificate     $acme_certificate;
+>> "%CONF%" echo 	ssl_certificate_key $acme_certificate_key;
+>> "%CONF%" echo 	ssl_certificate_cache max=2;
+)
 >> "%CONF%" echo 	ssl_protocols       TLSv1.2 TLSv1.3;
 >> "%CONF%" echo 	ssl_ciphers         HIGH:^^!aNULL:^^!MD5;
 >> "%CONF%" echo 	ssl_session_cache   shared:SSL:10m;
@@ -805,6 +867,65 @@ set "MSG=[√] 已生成 %CONF%"
 echo !MSG!
 exit /b 0
 
+REM ===================== helper :site_acme_mounts =====================
+REM An nginx container deployed by an older win.bat lacks the ACME mounts:
+REM the generated files would be invisible inside it, so refuse early.
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:site_acme_mounts
+docker container inspect nginx >nul 2>&1
+if errorlevel 1 exit /b 0
+set "MOUNTS="
+for /f "delims=" %%m in ('docker inspect -f "{{range .Mounts}}{{.Destination}} {{end}}" nginx 2^>nul') do set "MOUNTS=%%m"
+set "AS_MOUNTS=!MOUNTS!"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if($env:AS_MOUNTS -like '*/etc/nginx/modules-enabled*'){exit 0}else{exit 1}"
+if errorlevel 1 (
+  set "MSG=[错误] nginx 容器缺少 ACME 挂载（旧版部署），请先重新部署（win.bat），再添加公网域名站点"
+  echo !MSG!
+  exit /b 1
+)
+exit /b 0
+
+REM ===================== helper :site_acme_base =====================
+REM First ACME site only: main-level load_module snippet + http-level issuer
+REM (conf.d is included inside http, so the issuer file belongs there).
+REM Existing files are never overwritten. ACMOD_NEW / ACISS_NEW mark what this
+REM run created so :site_reload can remove them again if nginx -t fails.
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:site_acme_base
+set "ACMOD_NEW="
+set "ACISS_NEW="
+if not exist "%BASE%\etc\nginx\modules-enabled" md "%BASE%\etc\nginx\modules-enabled"
+set "AMOD=%BASE%\etc\nginx\modules-enabled\acme.conf"
+if not exist "%AMOD%" (
+  > "%AMOD%" echo load_module /usr/lib/nginx/modules/ngx_http_acme_module.so;
+  set "ACMOD_NEW=1"
+  set "MSG=[√] 已生成 %AMOD%"
+  echo !MSG!
+)
+set "AISS=%BASE%\etc\nginx\conf.d\acme-issuer.conf"
+if not exist "%AISS%" (
+  > "%AISS%" echo # Generated by win.bat site -- ACME issuer shared by all ACME sites.
+  set "MSG=# 127.0.0.11 是 Docker 内置 DNS；state_path 挂载在宿主机 data/nginx/acme，"
+  >> "%AISS%" echo !MSG!
+  set "MSG=# 容器重建不丢账户密钥与已签证书（避免撞 Let's Encrypt 速率限制）。"
+  >> "%AISS%" echo !MSG!
+  >> "%AISS%" echo resolver 127.0.0.11 valid=30s ipv6=off;
+  >> "%AISS%" echo acme_issuer letsencrypt {
+  >> "%AISS%" echo     uri https://acme-v02.api.letsencrypt.org/directory;
+  >> "%AISS%" echo     state_path /var/cache/nginx/acme;
+  >> "%AISS%" echo     accept_terms_of_service;
+  >> "%AISS%" echo }
+  >> "%AISS%" echo acme_shared_zone zone=ngx_acme_shared:1M;
+  set "ACISS_NEW=1"
+  set "MSG=[√] 已生成 %AISS%"
+  echo !MSG!
+)
+exit /b 0
+
 REM ===================== helper :site_reload =====================
 REM Only a RUNNING nginx container can be tested and reloaded. A failed -t means
 REM the new file is removed again, so a typo can never take the other sites down.
@@ -828,7 +949,9 @@ if not "!RUNNING!"=="true" (
 docker exec nginx nginx -t
 if errorlevel 1 (
   del "%CONF%" >nul 2>&1
-  set "MSG=[错误] nginx 自检未通过，已删除刚生成的 %NAME%.conf，原有站点未受影响"
+  if defined ACMOD_NEW del "%AMOD%" >nul 2>&1
+  if defined ACISS_NEW del "%AISS%" >nul 2>&1
+  set "MSG=[错误] nginx 自检未通过，已删除刚生成的配置，原有站点未受影响。若报 ngx_http_acme_module.so 找不到，说明镜像太旧：请重新部署（win.bat）拉取新镜像"
   echo !MSG!
   exit /b 1
 )
@@ -918,10 +1041,14 @@ set "MSG= 站点目录：%DOCROOT%（容器内 %CONTAINER_ROOT%）"
 echo !MSG!
 set "MSG= 访问地址：https://%DOMAIN%/（http 会被 301 跳到 https）"
 echo !MSG!
-if exist "%BASE%\etc\nginx\ssl\local.pem" (
-  set "MSG= 证书由 ssl.sh / win.bat 生成，已覆盖 *.xqkeji.dev，无需重签"
+if defined LOCAL_MODE (
+  if exist "%BASE%\etc\nginx\ssl\local.pem" (
+    set "MSG= 证书由 ssl.sh / win.bat 生成，已覆盖 *.xqkeji.dev，无需重签"
+  ) else (
+    set "MSG=[警告] 未找到 etc\nginx\ssl\local.pem，请先运行 win.bat 签发证书，否则 nginx 起不来"
+  )
 ) else (
-  set "MSG=[警告] 未找到 etc\nginx\ssl\local.pem，请先运行 win.bat 签发证书，否则 nginx 起不来"
+  set "MSG= 证书由 nginx ACME 模块自动向 Let's Encrypt 签发并续期（首次需几秒到几十秒；前提：80 端口公网可达；进度见 docker logs nginx）"
 )
 echo !MSG!
 echo ==============================================================
@@ -934,7 +1061,7 @@ REM ----
 :site_usage
 set "MSG=用法：win.bat site <name> [project-dir]"
 echo !MSG!
-set "MSG=      name 会成为 <name>.xqkeji.dev，project-dir 默认为 www\<name>"
+set "MSG=      域名交互选择：默认 <name>.xqkeji.dev（本地证书 + hosts），其它域名用 ACME 自动签发 Let's Encrypt 证书（需公网 DNS 与 80 端口）"
 echo !MSG!
 exit /b 1
 REM ---- keep the lines above this label 100% ASCII (see :add_site).
@@ -942,6 +1069,15 @@ REM ----
 REM ----
 :site_bad_name
 set "MSG=[错误] 站点名只能包含字母、数字和连字符，且以字母或数字开头：%NAME%"
+echo !MSG!
+exit /b 1
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:site_bad_domain
+REM The raw input is NOT echoed back: it is unvalidated user text and could
+REM contain quotes that break out of the set "MSG=..." quoting.
+set "MSG=[错误] 域名格式不正确（应为字母、数字、连字符组成的多级域名，如 crm.example.com）"
 echo !MSG!
 exit /b 1
 REM ---- keep the lines above this label 100% ASCII (see :add_site).
