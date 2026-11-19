@@ -5,6 +5,11 @@ etc/nginx/ssl/
 # 写成 bin/* 而不是 bin/，否则 git 不会进入该目录，下面的例外无效）
 bin/*
 !bin/add-site.sh
+!bin/upgrade.ps1
+
+# 升级与重建前的本地备份（upgrade.sh / --backup-data 生成）
+.upgrade-backup/
+data.backup-*/
 
 # 运行时数据库数据与日志（保留 .gitkeep 占位）
 data/mysql/*

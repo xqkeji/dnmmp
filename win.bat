@@ -13,7 +13,12 @@ REM Re-runnable: existing containers are removed and recreated, data\ is preserv
 REM Force re-issue cert: win.bat force  (or set FORCE=1 then re-run win.bat).
 REM MySQL is optional: the installer asks [Y/n], default is install.
 REM Unattended skip: win.bat no-mysql  (combinable: win.bat force no-mysql).
+REM Pin image versions: win.bat --tag mysql=8.0 --tag nginx=1.27  (repeatable;
+REM names: nginx / mysql / mongo / xqkeji). Without --tag images follow latest.
+REM Back up data\ before recreate: win.bat backup-data  (opt-in, can be slow).
 REM Start/stop installed containers: win.bat start / win.bat stop.
+REM Self-upgrade from the latest GitHub tag: win.bat upgrade
+REM   (force / backup-data / --local <zip> supported; see bin\upgrade.ps1).
 REM Register one local site: win.bat site <name> [project-dir]  (vhost + hosts + reload).
 REM
 REM NOTE: cmd.exe mis-parses unquoted UTF-8 Chinese on echo/REM lines under chcp 65001,
@@ -24,16 +29,115 @@ cd /d "%~dp0"
 set "BASE=%CD%"
 set "FORCE=0"
 set "NO_MYSQL=0"
-for %%a in (%1 %2) do (
-  if /i "%%~a"=="force" set "FORCE=1"
-  if /i "%%~a"=="no-mysql" set "NO_MYSQL=1"
-)
+set "BACKUP_DATA=0"
+set "TAG_nginx="
+set "TAG_mysql="
+set "TAG_mongo="
+set "TAG_xqkeji="
 REM win.bat site <name> [project-dir] -- register one local site without
 REM redeploying: nginx vhost + hosts entry + reload. See :add_site below.
 if /i "%~1"=="site" goto :add_site
 if /i "%~1"=="start" goto :start_env
 if /i "%~1"=="stop" goto :stop_env
+if /i "%~1"=="upgrade" goto :upgrade_handoff
 
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:arg_loop
+if "%~1"=="" goto :arg_done
+if /i "%~1"=="force" (
+  set "FORCE=1"
+  shift
+  goto :arg_loop
+)
+if /i "%~1"=="no-mysql" (
+  set "NO_MYSQL=1"
+  shift
+  goto :arg_loop
+)
+if /i "%~1"=="backup-data" (
+  set "BACKUP_DATA=1"
+  shift
+  goto :arg_loop
+)
+if /i "%~1"=="--tag" (
+  REM cmd splits unquoted name=tag at the '=' into two args; rejoin them.
+  set "TAGARG=%~2"
+  set "TAGSHIFT=2"
+  set "HASEQ="
+  for /f "tokens=1,* delims==" %%a in ("!TAGARG!") do if not "%%b"=="" set "HASEQ=1"
+  if defined TAGARG if not defined HASEQ if not "%~3"=="" (
+    set "TAGARG=!TAGARG!=%~3"
+    set "TAGSHIFT=3"
+  )
+  call :parse_tag "!TAGARG!" || goto :fail
+  if "!TAGSHIFT!"=="3" shift
+  shift
+  shift
+  goto :arg_loop
+)
+set "MSG=[错误] 未知参数：%~1（可用：force / no-mysql / backup-data / --tag 镜像名=tag）"
+echo !MSG!
+goto :fail
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:arg_done
+goto :deploy_start
+
+REM ===================== raw argument value (bypass cmd '=' splitting) =====================
+REM cmd splits UNQUOTED batch parameters at spaces and '=', so %3 cannot
+REM carry values like name=tag or paths containing '=' or spaces. %* keeps
+REM the original text; locate RAW_FLAG in it and return the verbatim remainder
+REM (up to the next known flag when RAW_STOP=1), outer quotes stripped.
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:raw_value
+set "RAW_VALUE="
+for /f "usebackq delims=" %%v in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=$env:RAW_TAIL; $f=$env:RAW_FLAG; $ms=[regex]::Matches($t,'\S+'); $idx=-1; for($i=0;$i -lt $ms.Count;$i++){ if($ms[$i].Value.Trim([char]34) -ieq $f){ $idx=$i; break } }; if($idx -ge 0){ $start=$ms[$idx].Index+$ms[$idx].Length; $end=$t.Length; if($env:RAW_STOP){ for($j=$idx+1;$j -lt $ms.Count;$j++){ $v=$ms[$j].Value.Trim([char]34); if($v -ieq 'force' -or $v -ieq '--force' -or $v -ieq 'backup-data' -or $v -ieq '--backup-data' -or $v -ieq '--local'){ $end=$ms[$j].Index; break } } }; $val=$t.Substring($start,$end-$start).Trim(); if($val.Length -ge 2 -and $val[0] -eq [char]34 -and $val[$val.Length-1] -eq [char]34){ $val=$val.Substring(1,$val.Length-2) }; Write-Output $val }"`) do set "RAW_VALUE=%%v"
+exit /b 0
+
+REM ===================== parse --tag name=tag =====================
+REM Whitelist: nginx / mysql / mongo / xqkeji (xqkeji maps to xqkeji/xqkeji).
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:parse_tag
+set "TV=%~1"
+if not defined TV (
+  set "MSG=[错误] --tag 需要参数，形如 --tag mysql=8.0"
+  echo !MSG!
+  exit /b 1
+)
+set "TN="
+set "TT="
+for /f "tokens=1,* delims==" %%a in ("!TV!") do (
+  set "TN=%%a"
+  set "TT=%%b"
+)
+if not defined TT (
+  set "MSG=[错误] --tag 格式应为 镜像名=tag，如 mysql=8.0（可用：nginx / mysql / mongo / xqkeji）"
+  echo !MSG!
+  exit /b 1
+)
+set "TAGOK=0"
+for %%k in (nginx mysql mongo xqkeji) do if /i "!TN!"=="%%k" set "TAGOK=1"
+if "!TAGOK!"=="0" (
+  set "MSG=[错误] --tag 不支持的镜像名：!TN!（可用：nginx / mysql / mongo / xqkeji）"
+  echo !MSG!
+  exit /b 1
+)
+set "TAG_!TN!=!TT!"
+set "MSG=[√] 已固定镜像版本：!TN!:!TT!"
+echo !MSG!
+exit /b 0
+
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:deploy_start
 echo ==============================================================
 set "MSG= dnmmp 部署（Windows + Docker Desktop）"
 echo !MSG!
@@ -46,6 +150,8 @@ call :check_docker || goto :fail
 call :ask_mysql
 call :prepare_dirs || goto :fail
 call :pull_images || goto :fail
+call :backup_data || goto :fail
+call :warn_db_upgrade
 call :remove_old || goto :fail
 call :ensure_network || goto :fail
 call :make_ssl || goto :fail
@@ -148,36 +254,120 @@ if "%WITH_MYSQL%"=="1" if not exist "%BASE%\etc\mysql" (
 )
 exit /b 0
 
-REM ===================== pull images (retry once on failure) =====================
+REM ===================== image reference (latest or pinned tag) =====================
+REM %1 = full image name, %2 = short whitelist key; sets REF for the caller.
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:image_ref
+set "REF=%~1"
+if defined TAG_%~2 set "REF=%~1:!TAG_%~2!"
+exit /b 0
+
+REM ===================== pull images (retry once, local fallback) =====================
 :pull_images
+set "IMG_LIST="
 for %%i in (nginx mysql mongo xqkeji/xqkeji) do (
   if /i "%%i"=="mysql" (
-    if "%WITH_MYSQL%"=="1" call :pull_one %%i || exit /b 1
+    if "%WITH_MYSQL%"=="1" (
+      for %%k in ("%%i") do call :image_ref "%%i" "%%~nk"
+      set "IMG_LIST=!IMG_LIST! !REF!"
+      call :pull_one "!REF!" || exit /b 1
+    )
   ) else (
-    call :pull_one %%i || exit /b 1
+    for %%k in ("%%i") do call :image_ref "%%i" "%%~nk"
+    set "IMG_LIST=!IMG_LIST! !REF!"
+    call :pull_one "!REF!" || exit /b 1
   )
 )
 exit /b 0
 
-REM ---- pull one image, retry once after 5 seconds ----
+REM ---- pull one image; output goes to a temp log so the Status line can be
+REM ---- translated (for /f would swallow errorlevel). Retry once after 5s;
+REM ---- if that fails but a local image exists, warn and continue with it.
 REM ---- keep the lines above this label 100% ASCII (see :add_site).
 REM ----
 REM ----
 :pull_one
 set "MSG=拉取镜像 %~1"
 echo !MSG!
-docker pull %~1
+set "PLOG=%TEMP%\dnmmp-pull-%RANDOM%.log"
+docker pull %~1 > "!PLOG!" 2>&1
 if errorlevel 1 (
   set "MSG=[警告] 拉取 %~1 失败，5 秒后重试"
   echo !MSG!
   timeout /t 5 >nul
-  docker pull %~1
+  docker pull %~1 > "!PLOG!" 2>&1
   if errorlevel 1 (
-    set "MSG=[错误] 镜像 %~1 拉取失败。请检查网络，或在 Docker Desktop 配置可用的 registry-mirrors 后重试。"
+    docker image inspect %~1 >nul 2>&1
+    if not errorlevel 1 (
+      set "MSG=[警告] 拉取仍失败，使用本地已有镜像 %~1 继续（可能不是最新版）"
+      echo !MSG!
+      del "!PLOG!" >nul 2>&1
+      exit /b 0
+    )
+    set "MSG=[错误] 镜像 %~1 拉取失败且本地不存在。请检查网络，或在 Docker Desktop 配置可用的 registry-mirrors 后重试。"
     echo !MSG!
+    del "!PLOG!" >nul 2>&1
     exit /b 1
   )
+  set "MSG=[√] %~1 重试拉取成功"
+  echo !MSG!
+  del "!PLOG!" >nul 2>&1
+  exit /b 0
 )
+findstr /c:"Image is up to date" "!PLOG!" >nul 2>&1
+if not errorlevel 1 (
+  set "MSG=[√] %~1 已是最新"
+  echo !MSG!
+)
+findstr /c:"Downloaded newer image" "!PLOG!" >nul 2>&1
+if not errorlevel 1 (
+  set "MSG=[√] %~1 已更新到新版"
+  echo !MSG!
+)
+del "!PLOG!" >nul 2>&1
+exit /b 0
+
+REM ===================== optional data\ backup before recreate =====================
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:backup_data
+if not "%BACKUP_DATA%"=="1" exit /b 0
+if not exist "%BASE%\data" (
+  set "MSG=[警告] data\ 不存在，跳过备份"
+  echo !MSG!
+  exit /b 0
+)
+set "STAMP="
+for /f "delims=" %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "STAMP=%%t"
+set "DEST=%BASE%\data.backup-!STAMP!"
+set "MSG=备份 data\ 到 !DEST!（可能耗时，取决于数据量）"
+echo !MSG!
+xcopy "%BASE%\data" "!DEST!\" /e /i /h /q >nul
+if errorlevel 1 (
+  set "MSG=[错误] 备份 data\ 失败，中止部署。请检查磁盘空间与权限后重试。"
+  echo !MSG!
+  exit /b 1
+)
+set "MSG=[√] 备份完成：!DEST!"
+echo !MSG!
+exit /b 0
+
+REM ===================== warn about latest-tag database upgrades =====================
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:warn_db_upgrade
+set "DBFOUND=0"
+for %%c in (mysql mongo) do (
+  docker container inspect %%c >nul 2>&1
+  if not errorlevel 1 set "DBFOUND=1"
+)
+if "!DBFOUND!"=="0" exit /b 0
+set "MSG=[警告] mysql/mongo 镜像跟随 latest：跨大版本升级可能无法启动旧数据。担心请先备份（win.bat backup-data 自动备份 data\）；升坏可用 --tag mysql=<旧版> 重跑回退"
+echo !MSG!
 exit /b 0
 
 REM ===================== remove existing containers (data preserved) =====================
@@ -334,6 +524,7 @@ REM ===================== start the four containers =====================
 :run_containers
 set "MSG=启动 nginx 容器"
 echo !MSG!
+call :image_ref nginx nginx
 docker run -d --name nginx --restart=always ^
   --network xqkeji-net --ip 172.0.0.2 -p 80:80 -p 443:443 ^
   -v "%BASE%\www:/home/www" ^
@@ -341,7 +532,7 @@ docker run -d --name nginx --restart=always ^
   -v "%BASE%\etc\nginx\nginx.conf:/etc/nginx/nginx.conf" ^
   -v "%BASE%\etc\nginx\conf.d:/etc/nginx/conf.d" ^
   -v "%BASE%\etc\nginx\ssl:/etc/nginx/ssl:ro" ^
-  nginx >nul
+  !REF! >nul
 if errorlevel 1 (
   set "MSG=[错误] 启动 nginx 容器失败（常见原因：80/443 被占用，或 dnmmp 目录不在 Docker Desktop 共享盘）"
   echo !MSG!
@@ -351,13 +542,14 @@ if errorlevel 1 (
 if "%WITH_MYSQL%"=="0" goto :run_mongo
 set "MSG=启动 mysql 容器"
 echo !MSG!
+call :image_ref mysql mysql
 docker run -d --name mysql --restart=always ^
   --network xqkeji-net --ip 172.0.0.200 -p 3306:3306 ^
   -v "%BASE%\etc\mysql:/etc/mysql/conf.d" ^
   -v "%BASE%\log\mysql:/logs" ^
   -v "%BASE%\data\mysql:/var/lib/mysql" ^
   -e MYSQL_ROOT_PASSWORD=xqkeji.cn ^
-  mysql >nul
+  !REF! >nul
 if errorlevel 1 (
   set "MSG=[错误] 启动 mysql 容器失败（常见原因：3306 被占用）"
   echo !MSG!
@@ -371,6 +563,7 @@ REM ----
 :run_mongo
 set "MSG=启动 mongo 容器"
 echo !MSG!
+call :image_ref mongo mongo
 docker run -d --name mongo --restart=always ^
   --network xqkeji-net --ip 172.0.0.100 -p 27017:27017 ^
   -v "%BASE%\log\mongo:/home/log" ^
@@ -378,7 +571,7 @@ docker run -d --name mongo --restart=always ^
   -v "%BASE%\data\mongo:/data/db" ^
   -e MONGO_INITDB_ROOT_USERNAME=root ^
   -e MONGO_INITDB_ROOT_PASSWORD=xqkeji.cn ^
-  mongo --config /home/configdb/mongodb.conf >nul
+  !REF! --config /home/configdb/mongodb.conf >nul
 if errorlevel 1 (
   set "MSG=[错误] 启动 mongo 容器失败（常见原因：27017 被占用）"
   echo !MSG!
@@ -387,13 +580,14 @@ if errorlevel 1 (
 
 set "MSG=启动 xqkeji（php-fpm）容器"
 echo !MSG!
+call :image_ref xqkeji/xqkeji xqkeji
 docker run -d --name xqkeji --restart=always ^
   --network xqkeji-net --ip 172.0.0.10 -p 9000:9000 ^
   -v "%BASE%\code:/home/code" ^
   -v "%BASE%\www:/home/www" ^
   -v "%BASE%\etc\php\php.ini:/usr/local/etc/php/php.ini" ^
   -v "%BASE%\log\php:/home/log" ^
-  xqkeji/xqkeji >nul
+  !REF! >nul
 if errorlevel 1 (
   set "MSG=[错误] 启动 xqkeji 容器失败（常见原因：9000 被占用）"
   echo !MSG!
@@ -445,10 +639,14 @@ set "MSG=数据目录：%BASE%\data"
 echo !MSG!
 set "MSG=日志目录：%BASE%\log"
 echo !MSG!
+set "MSG=使用镜像：!IMG_LIST!"
+echo !MSG!
 echo.
 set "MSG=容器已设置 --restart=always，Docker 启动后会自动运行。"
 echo !MSG!
 set "MSG=常用命令：win.bat start 启动 / win.bat stop 停止（Linux/macOS：./start.sh / ./stop.sh）"
+echo !MSG!
+set "MSG=自动升级：win.bat upgrade（Linux/macOS：./upgrade.sh）"
 echo !MSG!
 set "MSG=子域名用 win.bat site <name> 自动登记（nginx 配置 + hosts + 重载），例如：win.bat site crm"
 echo !MSG!
@@ -482,7 +680,14 @@ REM ----
 REM ----
 :add_site
 set "NAME=%~2"
-set "PROJ_ARG=%~3"
+REM cmd splits unquoted paths at '=' and spaces, so the project path is taken
+REM verbatim from the raw argument tail %* (everything after the site name).
+set "RAW_TAIL=%*"
+set "RAW_FLAG=%~2"
+set "RAW_STOP="
+set "RAW_VALUE="
+call :raw_value
+set "PROJ_ARG=!RAW_VALUE!"
 if not defined NAME goto :site_usage
 REM Validation goes through PowerShell, not findstr: findstr's regex character
 REM classes are case-INsensitive ([a-z] matches CRM), and piping a variable into
@@ -833,3 +1038,85 @@ set "MSG=数据保留在 %BASE%\data，重新启动执行 win.bat start"
 echo !MSG!
 pause
 exit /b 0
+
+REM ===================== upgrade: hand off to bin\upgrade.ps1 =====================
+REM win.bat upgrade [force] [backup-data] [--local <zip>]
+REM cmd.exe reads batch files by byte offset, so the handoff MUST stay on ONE
+REM parsed line: upgrade.ps1 may overwrite win.bat itself while powershell is
+REM running (powershell parses its whole script first, so that side is safe).
+REM After powershell returns, exit /b runs from the same already-parsed line
+REM and cmd never reads another byte of the replaced file.
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:upgrade_handoff
+set "UP_ARGS="
+set "UP_ZIP="
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:up_arg_loop
+if "%~2"=="" goto :up_run
+if /i "%~2"=="force" (
+  set "UP_ARGS=!UP_ARGS! -Force"
+  shift
+  goto :up_arg_loop
+)
+if /i "%~2"=="--force" (
+  set "UP_ARGS=!UP_ARGS! -Force"
+  shift
+  goto :up_arg_loop
+)
+if /i "%~2"=="backup-data" (
+  set "UP_ARGS=!UP_ARGS! -BackupData"
+  shift
+  goto :up_arg_loop
+)
+if /i "%~2"=="--backup-data" (
+  set "UP_ARGS=!UP_ARGS! -BackupData"
+  shift
+  goto :up_arg_loop
+)
+if /i "%~2"=="--local" (
+  REM cmd splits unquoted paths at '=' and spaces, so the value is taken
+  REM verbatim from the raw argument tail %* instead of the tokenized %3.
+  REM Everything up to the next known flag belongs to the path.
+  set "RAW_TAIL=%*"
+  set "RAW_FLAG=--local"
+  set "RAW_STOP=1"
+  set "RAW_VALUE="
+  call :raw_value
+  set "UP_ZIP=!RAW_VALUE!"
+  if not defined UP_ZIP (
+    set "MSG=[错误] --local 需要参数：源码 zip 的路径"
+    echo !MSG!
+    goto :fail
+  )
+  shift
+  goto :up_local_skip
+)
+set "MSG=[错误] 未知参数：%~2（可用：force / backup-data / --local <zip>）"
+echo !MSG!
+goto :fail
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:up_local_skip
+if "%~2"=="" goto :up_arg_loop
+if /i "%~2"=="force" goto :up_arg_loop
+if /i "%~2"=="--force" goto :up_arg_loop
+if /i "%~2"=="backup-data" goto :up_arg_loop
+if /i "%~2"=="--backup-data" goto :up_arg_loop
+if /i "%~2"=="--local" goto :up_arg_loop
+shift
+goto :up_local_skip
+REM ---- keep the lines above this label 100% ASCII (see :add_site).
+REM ----
+REM ----
+:up_run
+if not exist "%BASE%\bin\upgrade.ps1" (
+  set "MSG=[错误] 缺少 bin\upgrade.ps1，请在完整的 dnmmp 目录内运行 win.bat upgrade。"
+  echo !MSG!
+  goto :fail
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%BASE%\bin\upgrade.ps1" -Base "%BASE%" !UP_ARGS! & exit /b !errorlevel!

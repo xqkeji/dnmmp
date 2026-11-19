@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 ####################################
 # desc: xqkeji 服务器环境搭建脚本（自动识别操作系统）
-# version: 2.1
 # author: xqkeji.cn
 # Copyright (C) 2025-2026 xqkeji.cn
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -10,9 +9,11 @@
 # macOS：需已自行安装并启动 Docker Desktop / OrbStack / Colima
 # Windows：请使用 win.bat
 #
-# 结构：本文件是入口，负责识别系统、共用函数与部署四个容器；
+# 结构：本文件是入口，负责识别系统、共用函数与部署容器；
 #       准备 Docker 的逻辑按系统拆在 os/linux.sh、os/macos.sh，运行时 source 加载；
-#       本地 HTTPS 证书由 ssl.sh 生成（mkcert 优先、openssl 兜底），nginx 443 + 80→443。
+#       本地 HTTPS 证书由 ssl.sh 生成（mkcert 优先、openssl 兜底），nginx 443 + 80→443；
+#       环境程序自动升级见 upgrade.sh，日常启停见 start.sh / stop.sh。
+#       版本号以 VERSION 文件为准。
 set -euo pipefail
 
 NET_NAME=xqkeji-net
@@ -27,6 +28,8 @@ IMAGES=(nginx mysql mongo xqkeji/xqkeji)
 CONTAINERS=(nginx mysql mongo xqkeji)
 WITH_MYSQL=1
 MYSQL_FLAG=0
+IMAGE_TAGS=()
+BACKUP_DATA=0
 
 BASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SELF="$BASE_DIR/$(basename -- "${BASH_SOURCE[0]}")"
@@ -94,14 +97,42 @@ docker_ready() {
 # MySQL 可选：默认安装，交互确认或非交互标志跳过
 ####################################
 parse_args() {
-    local a
-    for a in "$@"; do
+    local a key
+    while [ $# -gt 0 ]; do
+        a=$1
         case "$a" in
             --with-mysql) WITH_MYSQL=1; MYSQL_FLAG=1 ;;
             --without-mysql) WITH_MYSQL=0; MYSQL_FLAG=1 ;;
-            *) die "未知参数：$a（可用：--with-mysql / --without-mysql）" ;;
+            --tag)
+                [ $# -ge 2 ] || die "--tag 需要参数，形如 --tag mysql=8.0"
+                case "$2" in
+                    ?*=?*) ;;
+                    *) die "--tag 格式应为 镜像名=tag，如 mysql=8.0（可用：nginx / mysql / mongo / xqkeji）" ;;
+                esac
+                key=${2%%=*}
+                case "$key" in
+                    nginx | mysql | mongo | xqkeji | xqkeji/xqkeji) IMAGE_TAGS+=("$2") ;;
+                    *) die "--tag 不支持的镜像名：$key（可用：nginx / mysql / mongo / xqkeji）" ;;
+                esac
+                shift
+                ;;
+            --backup-data) BACKUP_DATA=1 ;;
+            *) die "未知参数：$a（可用：--with-mysql / --without-mysql / --tag 镜像名=tag / --backup-data）" ;;
+        esac
+        shift
+    done
+}
+
+# 镜像引用：--tag 指定了就用 镜像名:tag，否则跟随 latest。
+# 短名（xqkeji）与全名（xqkeji/xqkeji）都接受。
+image_ref() {
+    local name=$1 key=${1##*/} t
+    for t in ${IMAGE_TAGS[@]+"${IMAGE_TAGS[@]}"}; do
+        case "$t" in
+            "$key="* | "$name="*) printf '%s:%s' "$name" "${t#*=}"; return 0 ;;
         esac
     done
+    printf '%s' "$name"
 }
 
 ask_mysql() {
@@ -132,10 +163,10 @@ ask_mysql() {
 
 apply_mysql_choice() {
     if [ "$WITH_MYSQL" = 1 ]; then
-        IMAGES=(nginx mysql mongo xqkeji/xqkeji)
+        IMAGES=("$(image_ref nginx)" "$(image_ref mysql)" "$(image_ref mongo)" "$(image_ref xqkeji/xqkeji)")
         CONTAINERS=(nginx mysql mongo xqkeji)
     else
-        IMAGES=(nginx mongo xqkeji/xqkeji)
+        IMAGES=("$(image_ref nginx)" "$(image_ref mongo)" "$(image_ref xqkeji/xqkeji)")
         CONTAINERS=(nginx mongo xqkeji)
     fi
 }
@@ -165,16 +196,52 @@ prepare_dirs() {
 }
 
 pull_images() {
-    local img
+    local img out rc
     for img in "${IMAGES[@]}"; do
         info "拉取镜像 $img"
-        if docker pull "$img"; then
+        out=$(docker pull "$img" 2>&1) && rc=0 || rc=$?
+        if [ "$rc" != 0 ]; then
+            warn "拉取 $img 失败，5 秒后重试"
+            sleep 5
+            if ! docker pull "$img"; then
+                if docker image inspect "$img" >/dev/null 2>&1; then
+                    warn "拉取仍失败，使用本地已有镜像 $img 继续（可能不是最新版）"
+                    continue
+                fi
+                die "镜像 $img 拉取失败且本地不存在。请检查网络，或配置可用的 registry-mirrors 后重试"
+            fi
+            info "$img 重试拉取成功"
             continue
         fi
-        warn "拉取 $img 失败，5 秒后重试"
-        sleep 5
-        docker pull "$img" || die "镜像 $img 拉取失败。请检查网络，或配置可用的 registry-mirrors 后重试"
+        case "$out" in
+            *"Image is up to date"*) info "$img 已是最新" ;;
+            *"Downloaded newer image"*) info "$img 已更新到新版" ;;
+        esac
     done
+}
+
+# 重建前可选整目录备份 data/（opt-in，数据量大时耗时）
+backup_data() {
+    [ "$BACKUP_DATA" = 1 ] || return 0
+    if [ ! -d "$BASE_DIR/data" ]; then
+        warn "data/ 不存在，跳过备份"
+        return 0
+    fi
+    local dest="$BASE_DIR/data.backup-$(date +%Y%m%d-%H%M%S)"
+    info "备份 data/ 到 $dest（可能耗时，取决于数据量）"
+    cp -a "$BASE_DIR/data" "$dest"
+    info "备份完成：$dest"
+}
+
+warn_db_upgrade() {
+    local c found=0
+    for c in mysql mongo; do
+        if docker container inspect "$c" >/dev/null 2>&1; then
+            found=1
+        fi
+    done
+    [ "$found" = 1 ] || return 0
+    warn "mysql/mongo 镜像跟随 latest：跨大版本升级可能无法启动旧数据。担心请先备份（--backup-data 自动备份 data/）；升坏可用 --tag mysql=<旧版> 重跑回退"
 }
 
 remove_old_containers() {
@@ -216,7 +283,7 @@ run_containers() {
         -v "$BASE_DIR/etc/nginx/nginx.conf:/etc/nginx/nginx.conf" \
         -v "$BASE_DIR/etc/nginx/conf.d:/etc/nginx/conf.d" \
         -v "$BASE_DIR/etc/nginx/ssl:/etc/nginx/ssl:ro" \
-        nginx >/dev/null
+        "$(image_ref nginx)" >/dev/null
 
     if [ "$WITH_MYSQL" = 1 ]; then
         info "启动 mysql 容器"
@@ -226,7 +293,7 @@ run_containers() {
             -v "$BASE_DIR/log/mysql:/logs" \
             -v "$BASE_DIR/data/mysql:/var/lib/mysql" \
             -e MYSQL_ROOT_PASSWORD='xqkeji.cn' \
-            mysql >/dev/null
+            "$(image_ref mysql)" >/dev/null
     fi
 
     info "启动 mongo 容器"
@@ -237,7 +304,7 @@ run_containers() {
         -v "$BASE_DIR/data/mongo:/data/db" \
         -e MONGO_INITDB_ROOT_USERNAME='root' \
         -e MONGO_INITDB_ROOT_PASSWORD='xqkeji.cn' \
-        mongo --config /home/configdb/mongodb.conf >/dev/null
+        "$(image_ref mongo)" --config /home/configdb/mongodb.conf >/dev/null
 
     info "启动 xqkeji（php-fpm）容器"
     docker run -d --name xqkeji --restart=always \
@@ -246,7 +313,7 @@ run_containers() {
         -v "$BASE_DIR/www:/home/www" \
         -v "$BASE_DIR/etc/php/php.ini:/usr/local/etc/php/php.ini" \
         -v "$BASE_DIR/log/php:/home/log" \
-        xqkeji/xqkeji >/dev/null
+        "$(image_ref xqkeji/xqkeji)" >/dev/null
 }
 
 verify_service() {
@@ -283,9 +350,11 @@ MongoDB ：127.0.0.1:27017  root / xqkeji.cn
 PHP-FPM ：127.0.0.1:9000   容器内 $IP_PHP:9000
 数据目录：$BASE_DIR/data
 日志目录：$BASE_DIR/log
+使用镜像：${IMAGES[*]}
 
 容器已设置 --restart=always，Docker 启动后会自动运行。
 常用命令：./start.sh 启动 / ./stop.sh 停止（Windows：win.bat start / win.bat stop）
+自动升级：./upgrade.sh（Windows：win.bat upgrade）
 EOF
 }
 
@@ -305,6 +374,8 @@ main() {
     apply_mysql_choice
     prepare_dirs
     pull_images
+    backup_data
+    warn_db_upgrade
     remove_old_containers
     ensure_network
     bash "$BASE_DIR/ssl.sh"

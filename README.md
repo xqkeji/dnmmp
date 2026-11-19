@@ -15,7 +15,7 @@ docker + nginx + mysql + mongodb + php 集成开发环境。
 
 `install.sh` 会自己判断操作系统，不需要再按系统挑脚本。
 
-脚本按「入口 + 分系统」组织：`install.sh` 是入口，负责识别系统、共用函数和部署容器；准备 Docker 的逻辑拆在 `os/linux.sh`（自动安装引擎）与 `os/macos.sh`（只检查、不安装），运行时由入口 `source` 加载，不能单独执行。发行版分派集中在 `os/linux.sh`，以后新增发行版只改这一个文件。本地 HTTPS 证书由独立的 `ssl.sh` 生成（可单独重跑），nginx 监听 443 并把 80 跳转到 443。日常启停用 `start.sh` / `stop.sh`（Windows：`win.bat start` / `win.bat stop`），只操作已安装的容器。
+脚本按「入口 + 分系统」组织：`install.sh` 是入口，负责识别系统、共用函数和部署容器；准备 Docker 的逻辑拆在 `os/linux.sh`（自动安装引擎）与 `os/macos.sh`（只检查、不安装），运行时由入口 `source` 加载，不能单独执行。发行版分派集中在 `os/linux.sh`，以后新增发行版只改这一个文件。本地 HTTPS 证书由独立的 `ssl.sh` 生成（可单独重跑），nginx 监听 443 并把 80 跳转到 443。日常启停用 `start.sh` / `stop.sh`（Windows：`win.bat start` / `win.bat stop`），只操作已安装的容器。环境程序自动升级用 `upgrade.sh`（Windows：`win.bat upgrade`），见「自动升级」。版本号以仓库根目录的 `VERSION` 文件为准。
 
 ## install.sh 做了什么
 
@@ -27,7 +27,7 @@ docker + nginx + mysql + mongodb + php 集成开发环境。
    - macOS → 只检查 Docker 是否已安装并运行，未运行则提示先启动，不做任何安装。
 3. 询问是否安装 MySQL 容器（**默认安装**）：交互终端里提示 `是否安装 MySQL 容器？[Y/n]`，直接回车或 `y` 安装、`n` 跳过；非交互环境默认安装；也可用 `--with-mysql` / `--without-mysql` 免交互指定。
 4. 创建 `code/`、`www/`、`log/*`、`data/*` 目录并放开写权限（MySQL 的 `log/mysql`、`data/mysql` 仅在安装 MySQL 时创建）。
-5. 按选择拉取 `nginx`、`mysql`、`mongo`、`xqkeji/xqkeji` 镜像（失败自动重试一次；不装 MySQL 时只拉三个）。
+5. 按选择拉取 `nginx`、`mysql`、`mongo`、`xqkeji/xqkeji` 镜像（不装 MySQL 时只拉三个）。每个镜像拉取后报告「已是最新」或「已更新到新版」；失败自动重试一次，仍失败但本地已有该镜像时用本地镜像继续并警告，本地也没有才报错中止。可用 `--tag 镜像名=tag` 固定版本，见「镜像升级与回退」。
 6. 创建 `xqkeji-net` 网络（`172.0.0.0/24`）。
 7. 用 `ssl.sh` 生成本地 HTTPS 证书（mkcert 本地 CA 优先，拉不到 mkcert 时退回 openssl 自签），覆盖 `localhost`、`127.0.0.1`、`*.xqkeji.dev` 等。
 8. 启动容器（装 MySQL 时四个，否则三个），全部 `--restart=always`；nginx 监听 443（https），并把 80 自动跳转到 443。已存在的容器删除重建，本次不装 MySQL 时旧的 mysql 容器一并移除，`data/` 数据保留。
@@ -65,7 +65,7 @@ chmod +x install.sh
 
 普通用户执行即可，安装 Docker 需要 root 权限时脚本会自动 `sudo`。没有 `sudo` 的机器请用 root 执行 `bash install.sh`。
 
-执行过程中会询问是否安装 MySQL 容器（默认安装，直接回车即可）；不需要时输入 `n`，或免交互执行 `./install.sh --without-mysql`（想明确装回来用 `--with-mysql`）。
+执行过程中会询问是否安装 MySQL 容器（默认安装，直接回车即可）；不需要时输入 `n`，或免交互执行 `./install.sh --without-mysql`（想明确装回来用 `--with-mysql`）。其它可选参数：`--tag 镜像名=tag` 固定镜像版本（可重复）、`--backup-data` 重建前备份 `data/`，见「镜像升级与回退」。
 
 执行完成后会自动拉取镜像并启动所选容器（默认 nginx、mysql、mongo、xqkeji（php-fpm）四个；跳过 MySQL 时三个）。Docker 服务已设为开机自启，容器为 `--restart=always`，重启机器后环境自动恢复。
 
@@ -162,7 +162,7 @@ macOS 上需要注意：
 
 然后进入 dnmmp 目录，双击或在命令行执行 `win.bat`。
 
-`win.bat` 是 `install.sh` 的 Windows 原生批处理版（`install.sh` 不在 Windows Git Bash 里运行），用已装好的 Docker Desktop 完成等价部署：检查 Docker → 询问是否安装 MySQL（默认安装，回车确认；`win.bat no-mysql` 免交互跳过，可与 `force` 组合）→ 建目录 → 按选择拉取镜像（失败重试一次）→ 删除重建已存在的容器（`data/` 数据保留，不装 MySQL 时旧 mysql 容器一并移除）→ 确保 `xqkeji-net`（`172.0.0.0/24`）→ 生成本地 HTTPS 证书 → 启动所选容器（装 MySQL 时 nginx/mysql/mongo/xqkeji 四个，否则三个；nginx 监听 443 https、80 跳转 443，全部 `--restart=always`）→ 校验 `https://127.0.0.1/` → 打印状态与连接信息。可重复执行。日常启停：`win.bat start` / `win.bat stop`。
+`win.bat` 是 `install.sh` 的 Windows 原生批处理版（`install.sh` 不在 Windows Git Bash 里运行），用已装好的 Docker Desktop 完成等价部署：检查 Docker → 询问是否安装 MySQL（默认安装，回车确认；`win.bat no-mysql` 免交互跳过，可与 `force` 组合）→ 建目录 → 按选择拉取镜像（报告「已是最新 / 已更新到新版」，失败重试一次，仍失败用本地已有镜像兜底）→ 删除重建已存在的容器（`data/` 数据保留，不装 MySQL 时旧 mysql 容器一并移除）→ 确保 `xqkeji-net`（`172.0.0.0/24`）→ 生成本地 HTTPS 证书 → 启动所选容器（装 MySQL 时 nginx/mysql/mongo/xqkeji 四个，否则三个；nginx 监听 443 https、80 跳转 443，全部 `--restart=always`）→ 校验 `https://127.0.0.1/` → 打印状态与连接信息。可重复执行。日常启停：`win.bat start` / `win.bat stop`；自动升级：`win.bat upgrade`（见「自动升级」）；固定镜像版本 `win.bat --tag mysql=8.0`、重建前备份 `win.bat backup-data`（见「镜像升级与回退」）。
 
 证书优先下载 `mkcert.exe` 到 `bin/`（受信任，绿锁），拉不到时退回宿主 `openssl` 自签（浏览器提示不受信任，测试无碍），覆盖域名与 `ssl.sh` 一致；已有证书默认不重签，强制重签：`win.bat force`（或 `set FORCE=1` 后重跑 `win.bat`）。`bin/` 与 `etc/nginx/ssl/` 已在 `.gitignore` 里，私钥不进 git。
 
@@ -276,9 +276,62 @@ docker ps --filter network=xqkeji-net    # 查看状态
 docker logs nginx                        # 查看日志
 ```
 
+## 自动升级
+
+`upgrade.sh`（Windows：`win.bat upgrade`）把**环境程序本身**升级到 GitHub 上的最新发行版：查询最新 tag、下载源码 zip、按白名单覆盖程序文件，数据库数据与站点内容不受影响。
+
+```bash
+./upgrade.sh        # Linux / macOS
+```
+
+```bat
+win.bat upgrade     :: Windows
+```
+
+流程：读本地 `VERSION` → 经 GitHub API 查最新 tag → 版本相同则提示「已是最新」退出 → 下载并解压该 tag 的源码 zip → 校验文件齐全 → 旧文件备份到 `.upgrade-backup/<旧版本>-<时间戳>/` → 按白名单覆盖 → 询问是否立即重新部署 `[Y/n]`（默认是；非交互环境跳过并提示手动执行）。覆盖中途失败会**自动回滚**到升级前的文件；重新部署失败不回滚（升级本身已成功，按安装脚本的报错处理即可）。
+
+**只覆盖程序文件**：`install.sh`、`win.bat`、`ssl.sh`、`start.sh`、`stop.sh`、`upgrade.sh`、`os/`、`bin/add-site.sh`、`bin/upgrade.ps1`、`README.md`、`LICENSE`、`VERSION`、`.gitignore`、`.gitattributes`，以及基础配置 `etc/nginx/nginx.conf`、`etc/nginx/conf.d/default.conf`、`etc/php/php.ini`、`etc/php/conf.d/*.ini`、`etc/mysql/my.ini`、`etc/mongo/mongodb.conf`。**绝不触碰**：`data/`、`www/`、`code/`、`log/`、`etc/nginx/ssl/`、`bin/mkcert*`、`conf.d` 里的自定义站点配置（如 `crm.conf`）、hosts。
+
+可选参数（两平台等价）：
+
+| 参数 | 作用 |
+| --- | --- |
+| `--force`（Windows 也可写 `force`） | 版本相同也重新覆盖一遍 |
+| `--local <zip>` | 离线升级：使用已从 GitHub tag 页下载的源码 zip，不联网 |
+| `--backup-data`（Windows 也可写 `backup-data`） | 升级后重新部署前备份 `data/`（透传给安装脚本） |
+
+重新部署时的 MySQL 取舍按现有容器推导：有 mysql 容器 → 装；有其它容器但没有 mysql → 不装；一个容器都没有 → 交给安装脚本询问/默认（首次部署不会被误跳过）。
+
+几点说明：
+
+- Linux / macOS 需要 `curl` 与 `unzip`；Windows 走 PowerShell 内置能力，无额外依赖。网络到不了 GitHub 时，在别的机器下载 zip 后用 `--local` 升级。
+- **2.5.0 及以前没有升级入口**：第一次需手动下载新版 zip 解压覆盖一次（或 `git pull`），之后就能用 `upgrade.sh` / `win.bat upgrade` 了。
+- 升级本身只换程序文件；镜像更新发生在升级后的重新部署一步（拉 latest 并重建容器）。跳过重新部署时，稍后手动跑安装脚本即可。
+
+## 镜像升级与回退
+
+镜像默认跟随 `latest`：重跑 `install.sh` / `win.bat`（或在 `upgrade.sh` 后确认重新部署）会拉取最新镜像并重建容器，`data/` 数据保留。每个镜像拉取后报告「已是最新」或「已更新到新版」；失败自动重试一次，仍失败但本地已有该镜像时用本地镜像继续并警告，本地也没有才报错中止。
+
+**固定版本 / 回退**：`--tag 镜像名=tag` 把任意镜像钉在指定版本（可重复；可用名：`nginx` / `mysql` / `mongo` / `xqkeji`，不指定则跟随 latest）：
+
+```bash
+./install.sh --tag mysql=8.0 --tag nginx=1.27
+```
+
+```bat
+win.bat --tag mysql=8.0 --tag nginx=1.27
+```
+
+数据库升上新大版本后起不来时，这就是回退工具：钉回旧版 tag 重跑。
+
+**跨大版本风险**：mysql/mongo 跟随 latest 可能跨大版本（如 MySQL 8.0 → 8.4/9.x、MongoDB 7 → 8），新版可能无法直接启动旧数据目录，且新版一旦启动可能改写数据格式，之后想回退也回不去。安装脚本检测到已有 mysql/mongo 容器时会固定提醒一次；升级后用 `docker logs mysql` / `docker logs mongo` 核对启动是否正常。两个保险：
+
+- `--backup-data`（Windows：`backup-data`）：重建前把 `data/` 整目录复制到 `data.backup-<时间戳>/`（可选，数据量大时耗时）。升坏时：停止容器 → 把备份目录恢复为 `data/` → `--tag` 钉回旧版重跑。
+- 未备份时先试 `--tag mysql=<旧版>` 直接回退；若新版已改写数据格式则可能无法启动，只能恢复备份——所以提醒里建议担心就先备份。
+
 ## 常见问题
 
-**镜像拉取失败**：脚本首次安装 Docker 时会写入 `/etc/docker/daemon.json` 配置镜像加速（`https://docker.m.daocloud.io`）；已存在该文件时保留原配置不动。该加速站会代理并缓存 Docker Hub 上游，`xqkeji/xqkeji` 也能经它拉取（已实测：manifest 与全部 blob 均返回 200）。若拉取仍失败，多为网络中断（表现为 `unexpected EOF`），重跑脚本即可；也可换成其它可用的 `registry-mirrors`，改完 `systemctl restart docker` 再重跑。
+**镜像拉取失败**：脚本首次安装 Docker 时会写入 `/etc/docker/daemon.json` 配置镜像加速（`https://docker.m.daocloud.io`）；已存在该文件时保留原配置不动。该加速站会代理并缓存 Docker Hub 上游，`xqkeji/xqkeji` 也能经它拉取（已实测：manifest 与全部 blob 均返回 200）。拉取失败脚本会自动重试一次；仍失败但本地已有该镜像时用本地镜像继续（有警告，可能不是最新版），本地也没有才报错。若拉取仍失败，多为网络中断（表现为 `unexpected EOF`），重跑脚本即可；也可换成其它可用的 `registry-mirrors`，改完 `systemctl restart docker` 再重跑。
 
 **提示 `iptables: false` 冲突**：旧版 `ubuntu.sh` / `wsl.sh` 会往 `/etc/docker/daemon.json` 写 `"iptables": false`，它会让 `-p` 端口映射失效。删掉该配置项并 `systemctl restart docker` 后重跑即可。
 
